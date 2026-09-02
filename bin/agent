@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+import { emit, fmt, loadConfig, repoRoot } from '../src/util.mjs';
+import check from '../src/cmd/check.mjs';
+import stats from '../src/cmd/stats.mjs';
+import delegate from '../src/cmd/delegate.mjs';
+import { guessTranscript, sessionInfo } from '../src/session.mjs';
+
+const HELP = `agent — コンテキスト予算つきのプロジェクトラッパ
+
+  agent test|lint|build|typecheck [-- <extra>]   固定形式・出力上限つきで実行
+  agent log <id> [--grep <re>] [--lines N]       退避した全文を検索
+  agent stats [--limit N] [--all] [--full]       トークンがどこに消えたか実測
+  agent age                                      キャッシュ残り時間とコンテキストサイズ
+  agent delegate [--write] [-m <model>] "<task>" 安いモデル(opencode)へ委譲
+  agent runs                                     退避ログ一覧
+
+すべての出力は .agent/config.yml の limits.max_lines 以内に収まる。
+全文はディスクにあり、agent log で取りに行ける。`;
+
+const [, , cmdRaw, ...argv] = process.argv;
+const cmd = cmdRaw || 'help';
+const cfg = loadConfig(repoRoot());
+
+const exit = (c) => process.exit(typeof c === 'number' ? c : 0);
+
+switch (cmd) {
+  case 'test':
+  case 'lint':
+  case 'build':
+  case 'typecheck':
+    exit(check(cmd, argv, cfg));
+    break;
+  case 'stats':
+    exit(stats(argv, cfg));
+    break;
+  case 'delegate':
+    exit(delegate(argv, cfg));
+    break;
+  case 'log':
+    exit(showLog(argv, cfg));
+    break;
+  case 'runs':
+    exit(listRuns(cfg));
+    break;
+  case 'age':
+    exit(age(cfg));
+    break;
+  default:
+    console.log(HELP);
+    exit(cmd === 'help' || cmd === '--help' ? 0 : 2);
+}
+
+function runsDir(cfg) {
+  return path.join(cfg.__root, '.agent', 'runs');
+}
+
+function showLog(argv, cfg) {
+  const id = argv[0];
+  const grep = argv.includes('--grep') ? argv[argv.indexOf('--grep') + 1] : null;
+  const max = Number(argv[argv.indexOf('--lines') + 1]) || 60;
+  const file = path.join(runsDir(cfg), `${id}.log`);
+  if (!id || !fs.existsSync(file)) {
+    console.log(`log: ${id} が見つかりません。agent runs で一覧`);
+    return 2;
+  }
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const hit = grep ? lines.filter((l) => new RegExp(grep, 'i').test(l)) : lines;
+  console.log(emit(hit.length ? hit : [`(no match for /${grep}/ in ${lines.length} lines)`], max));
+  return 0;
+}
+
+function listRuns(cfg) {
+  const d = runsDir(cfg);
+  if (!fs.existsSync(d)) return console.log('runs: なし'), 0;
+  const rows = fs
+    .readdirSync(d)
+    .filter((f) => f.endsWith('.log'))
+    .map((f) => ({ f, st: fs.statSync(path.join(d, f)) }))
+    .sort((a, b) => b.st.mtimeMs - a.st.mtimeMs)
+    .slice(0, 20)
+    .map(({ f, st }) => `  ${f.replace(/\.log$/, '').padEnd(24)} ${fmt.n(st.size).padStart(9)} B  ${st.mtime.toISOString().slice(5, 16)}`);
+  console.log(rows.join('\n'));
+  return 0;
+}
+
+function age(cfg) {
+  const t = guessTranscript(cfg.__root);
+  if (!t) return console.log('age: トランスクリプトが見つかりません'), 1;
+  const ttl = cfg.context?.cache_ttl_min ?? 60;
+  const s = sessionInfo(t, ttl);
+  const warn = cfg.context?.warn_tokens ?? 150000;
+  const clear = cfg.context?.clear_tokens ?? 250000;
+  const perTurn = Math.round(s.ctx * 0.1);
+  const verdict = s.ctx >= clear ? 'CLEAR推奨' : s.ctx >= warn ? '要注意' : 'OK';
+  console.log(
+    [
+      `ctx    ${fmt.n(s.ctx)} tok  → 1ターンあたり ${fmt.n(perTurn)} 加重tok  [${verdict}]`,
+      s.remainMin == null
+        ? 'cache  不明'
+        : s.expired
+          ? `cache  失効 (最終 ${Math.round(s.ageMin)}分前) — 再開すると ${fmt.n(s.ctx)} tok を 2x で再キャッシュ`
+          : `cache  残り ${Math.round(s.remainMin)}分 (最終 ${Math.round(s.ageMin)}分前)`,
+      `file   ${path.basename(t)}`,
+    ].join('\n'),
+  );
+  return 0;
+}

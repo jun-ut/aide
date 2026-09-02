@@ -1,0 +1,26 @@
+# AIDE 設定。未設定の項目は package.json / pyproject.toml / go.mod などから自動検出される。
+# ここは「自動検出を上書きしたいとき」だけ書く。
+
+commands:
+  # test: pnpm vitest run
+  # lint: pnpm eslint .
+  # build: pnpm build
+  # typecheck: pnpm exec tsc --noEmit
+
+limits:
+  max_failures: 5      # 表示する失敗の最大件数
+  max_lines: 40        # agent の出力行数の絶対上限
+  timeout_sec: 1800
+
+context:
+  cache_ttl_min: 60    # プロンプトキャッシュの TTL (Claude Code は 1h)
+  warn_tokens: 150000  # ステータスラインが黄色になる閾値
+  clear_tokens: 250000 # /clear を推奨する閾値 (実測: この辺で clear が 3〜5 ターンで元が取れる)
+
+state:
+  max_lines: 150       # .agent/state.md の上限。超えると hook が圧縮を強制する
+
+delegate:
+  provider: opencode-go
+  model: glm-5.3-flash
+  timeout_sec: 600
