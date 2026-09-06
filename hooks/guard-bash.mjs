@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PreToolUse(Bash) — 止めるものは 3 種類。
+ * PreToolUse(Bash|PowerShell) — 止めるものは 3 種類。
  *
  * 1. 生のテスト/lint/build   → agent ラッパへ誘導 (WRAPPED)
  * 2. 出力が青天井のコマンド   → 絞り方を指示 (UNBOUNDED)
@@ -13,8 +13,15 @@
  * 「sed -i 禁止」と書いてあるだけで**何も強制されていなかった**。
  * 実際に sed -i / perl -pi / heredoc が素通りすることを確認して分かった。
  *
+ * **PowerShell も見る (2026-09-07 に追加)。** Claude Code のドキュメントが明示している:
+ * 「シェルコマンドを検査する hook は `Bash|PowerShell` を matcher にせよ。Bash だけでは
+ * 不十分」。とくに **Windows で Git Bash が無いと PowerShell が唯一のシェルになる**ので、
+ * ここが無いと Windows では 3 のルールが丸ごと無効になる。せっかく hook で強制した
+ * ものが、プラットフォームを変えただけで「書いてあるだけ」に戻る。
+ *
  * 逃げ道:
  * - 先頭に AGENT_RAW=1     … 全部素通し (agent 自身の内部実行もこれを使う)
+ *   PowerShell では `$env:AGENT_RAW=1;` / `$env:AGENT_RAW='1';` も同じ扱い。
  * - 末尾に # ALLOW-SCRIPT-EDIT … 3 のみ素通し (3ファイル以上の一括置換・構造化データ変換用)
  */
 import { repoRoot } from '../src/util.mjs';
@@ -33,19 +40,39 @@ const WRAPPED = [
 ];
 
 // 出力量が予測できないコマンド。head/tail/grep で絞られていれば許す。
-const UNBOUNDED = [
+// シェルに依らないもの (git / npm は同じ形で呼ばれる)。
+const UNBOUNDED_ANY = [
+  { re: /^git\s+log\b(?!.*(-n\s|--oneline|-\d))/, hint: 'git log は -n と --oneline を付けてください' },
+  { re: /^git\s+diff\b(?!.*(--stat|--name-only|--\s))/, hint: 'git diff は --stat か --name-only で始めてください' },
+  { re: /^npm\s+ls\b(?!.*--depth)/, hint: 'npm ls は --depth 0 を付けてください' },
+];
+
+const UNBOUNDED_SH = [
   // 対象は「ファイルを丸ごと吐く cat」だけ。
   // cat > f / cat << EOF は書き込み、引数なしの cat -v はパイプの受け手なので除外する。
   { re: /^cat\s+(?:-\S+\s+)*[^-<>\s][^<>]*$/, hint: "sed -n 'START,ENDp' か Read(offset/limit) を使ってください" },
   // 絶対パスからの find。-maxdepth / -prune / -quit で絞ってあれば許す。
   // 単に /^find\s+\// だと「ルートから」のつもりで絶対パス全部に当たる(実際に踏んだ)。
   { re: /^find\s+\/(?!.*\s-(?:maxdepth|prune|quit)\b)/, hint: 'find は -maxdepth か -prune で範囲を絞ってください' },
-  { re: /^git\s+log\b(?!.*(-n\s|--oneline|-\d))/, hint: 'git log は -n と --oneline を付けてください' },
-  { re: /^git\s+diff\b(?!.*(--stat|--name-only|--\s))/, hint: 'git diff は --stat か --name-only で始めてください' },
-  { re: /^npm\s+ls\b(?!.*--depth)/, hint: 'npm ls は --depth 0 を付けてください' },
 ];
 
-const BOUNDED = /\b(head|tail|wc|jq|cut|uniq)\b|\bgrep\b|\brg\b|\bsed\s+-n\b/;
+// PowerShell 版。**find の教訓に従い「危険な形」ではなく「絞られていない形」を書く。**
+const UNBOUNDED_PS = [
+  {
+    re: /^(?:Get-Content|gc)\b(?!.*-(?:TotalCount|Tail|First)\b)(?!\s*$)/i,
+    hint: 'Get-Content は -TotalCount / -Tail で絞るか Read(offset/limit) を使ってください',
+  },
+  {
+    re: /^(?:Get-ChildItem|gci)\b(?=.*-Recurse)(?!.*-Depth\b)/i,
+    hint: 'Get-ChildItem -Recurse は -Depth で絞ってください',
+  },
+];
+
+const BOUNDED_SH = /\b(head|tail|wc|jq|cut|uniq)\b|\bgrep\b|\brg\b|\bsed\s+-n\b/;
+// PowerShell の「絞った」形。-First/-Last は Select-Object 以外にも付くので単体で見る。
+// `\b-First` は動かない。空白と `-` はどちらも非単語文字なので境界にならない。
+// (書いた直後に気づいた類の罠なので、形を残しておく)
+const BOUNDED_PS = /\bSelect-(?:Object|String)\b|\bMeasure-Object\b|(?:^|\s)-(?:First|Last|TotalCount|Tail)\b|\brg\b|\bgrep\b/i;
 
 // ---- シェル経由のソース書き換え ----
 //
@@ -58,7 +85,23 @@ const BOUNDED = /\b(head|tail|wc|jq|cut|uniq)\b|\bgrep\b|\brg\b|\bsed\s+-n\b/;
 const SOURCE_EXT =
   /\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|go|rb|php|java|kt|swift|c|h|cc|cpp|hpp|cs|sh|bash|zsh|sql|css|scss|html|vue|svelte|sl|md|json|ya?ml|toml)$/i;
 
-const WRITE_OK = /^(?:\/tmp\/|\/dev\/|\/var\/|\/proc\/)|(?:^|\/)(?:target|node_modules|dist|build|coverage|\.git|\.agent)\//;
+// 書いてよい先。判定前に `\` を `/` に正規化するので、ここは `/` だけ見ればよい。
+// Windows 分: %TEMP% / $env:TEMP、AppData/Local/Temp、PowerShell の $null、
+// および Git Bash のドライブ表記 (/c/Users/...)。POSIX の /tmp も MSYS 上で生きている。
+const WRITE_OK = new RegExp(
+  [
+    '^(?:/tmp/|/dev/|/var/|/proc/)', // POSIX
+    '^(?:[A-Za-z]:)?/(?:dev|tmp)/', // C:/tmp/ のような形
+    '^\\$null$', // PowerShell の /dev/null
+    '^(?:%TEMP%|%TMP%|\\$env:TEMP|\\$env:TMP)(?:/|$)',
+    '/AppData/Local/Temp/',
+    '(?:^|/)(?:target|node_modules|dist|build|coverage|\\.git|\\.agent)/',
+  ].join('|'),
+  'i',
+);
+
+/** Windows パスも同じ物差しで測れるようにする。引用符も落とす。 */
+const normPath = (t) => String(t).replace(/^['"]|['"]$/g, '').replace(/\\/g, '/');
 
 // その場書き換え。対象が何であれ Write/Edit で書ける。
 const INPLACE = [
@@ -67,12 +110,40 @@ const INPLACE = [
   { re: /^ruby\s+(?:-\S+\s+)*-\S*i\S*(?:\s|$)/, what: 'ruby -i' },
 ];
 
-/** 断片が書き込む先を集める。`2>&1` や `>&2` は捕まえない。 */
-function writeTargets(seg) {
+/** `>` / `>>` の書き込み先。`2>&1` や `>&2` は捕まえない。両シェル共通の形。 */
+function redirTargets(seg) {
   const out = [];
   for (const m of seg.matchAll(/(?:^|\s)>>?\s*(['"]?)([^\s'"|&;<>]+)\1/g)) out.push(m[2]);
+  return out;
+}
+
+/** sh 側だけの書き込み口。 */
+function shWriteTargets(seg) {
   const tee = seg.match(/^tee\s+(?:-\S+\s+)*(\S+)/);
-  if (tee) out.push(tee[1].replace(/^['"]|['"]$/g, ''));
+  return tee ? [tee[1]] : [];
+}
+
+/**
+ * PowerShell の書き込み cmdlet が書く先。
+ * `"x" | Set-Content src/a.rs` は segments() が `|` で割るので断片の先頭に来る。
+ *
+ * **エイリアス (sc / ac) は入れない。** `sc` は Windows の実コマンド (sc query) で、
+ * 誤爆すると hook ごと無効化される。find の教訓と同じで、広く取るより外さない方を選ぶ。
+ */
+function psWriteTargets(seg) {
+  const out = [];
+  const m = seg.match(/^(?:Out-File|Set-Content|Add-Content|Tee-Object|New-Item)\b(.*)$/i);
+  if (m) {
+    const named = m[1].match(/-(?:Path|FilePath|LiteralPath)\s+(['"]?)([^\s'"]+)\1/i);
+    if (named) out.push(named[2]);
+    else {
+      // 位置指定引数。`-` で始まるものはフラグなので拾わない。
+      const pos = m[1].match(/^\s+(['"]?)([^\s'"-][^\s'"]*)\1/);
+      if (pos) out.push(pos[2]);
+    }
+  }
+  // [IO.File]::WriteAllText('src/a.rs', ...) — .NET 直呼びの抜け道
+  for (const w of seg.matchAll(/\[(?:System\.)?IO\.File\]::Write\w+\(\s*(['"])([^'"]+)\1/gi)) out.push(w[2]);
   return out;
 }
 
@@ -82,13 +153,17 @@ function inlineWrite(seg) {
   return /\bopen\s*\([^)]*['"][wa]\+?['"]/.test(seg) || /\bwriteFileSync\s*\(/.test(seg);
 }
 
-function scriptEdit(seg) {
+function scriptEdit(seg, ps) {
+  // sed -i / perl -pi は PowerShell からも呼べる (Git for Windows が PATH に置く)。
+  // シェルが変わっても禁止する理由は変わらないので、両方で見る。
   for (const p of INPLACE) {
     if (p.re.test(seg)) return `${p.what} での書き換え`;
   }
   if (inlineWrite(seg)) return 'スクリプトからの直接書き込み';
-  for (const t of writeTargets(seg)) {
-    if (SOURCE_EXT.test(t) && !WRITE_OK.test(t)) return `\`${t}\` へのリダイレクト`;
+  const targets = [...redirTargets(seg), ...(ps ? psWriteTargets(seg) : shWriteTargets(seg))];
+  for (const t of targets) {
+    const p = normPath(t);
+    if (SOURCE_EXT.test(p) && !WRITE_OK.test(p)) return `\`${t}\` への書き込み`;
   }
   return null;
 }
@@ -157,17 +232,25 @@ process.stdin.on('end', () => {
     return allow();
   }
   const cmd = String(j.tool_input?.command || '');
-  if (!cmd || /AGENT_RAW=1/.test(cmd)) return allow();
+  // PowerShell では `$env:AGENT_RAW=1;` や `$env:AGENT_RAW='1';` と書く。
+  if (!cmd || /AGENT_RAW\s*=\s*['"]?1/.test(cmd)) return allow();
 
+  // どちらのツールから来たか。tool_input.command はどちらも同じ形で入る。
+  const ps = j.tool_name === 'PowerShell';
   const root = repoRoot(j.cwd || process.cwd());
-  const body = stripHeredocs(cmd);
+  // heredoc は sh のもの。PowerShell の here-string (@" "@) には `|` を
+  // コマンド位置と誤読させる形が無いので、そのまま流す。
+  const body = ps ? cmd : stripHeredocs(cmd);
   const segs = segments(body);
-  const bounded = BOUNDED.test(body);
+  const bounded = (ps ? BOUNDED_PS : BOUNDED_SH).test(body);
+  const unbounded = [...UNBOUNDED_ANY, ...(ps ? UNBOUNDED_PS : UNBOUNDED_SH)];
   const allowScriptEdit = /#\s*ALLOW-SCRIPT-EDIT\b/.test(cmd);
+  // 逃げ道の書き方はシェルで違う。間違った例を出すと素直に詰まるので分ける。
+  const raw = ps ? "$env:AGENT_RAW='1';" : 'AGENT_RAW=1';
 
   for (const seg of segs) {
     if (!allowScriptEdit) {
-      const how = scriptEdit(seg);
+      const how = scriptEdit(seg, ps);
       if (how) {
         return deny(
           `${how} は禁止です。Read → Edit / Write を使ってください。\n` +
@@ -183,15 +266,15 @@ process.stdin.on('end', () => {
         return deny(
           `\`${seg.slice(0, 50)}\` の代わりに \`${w.use}\` を使ってください。\n` +
             `理由: 出力が固定形式・行数上限つきになり、全文は .agent/runs/ に退避され、前回との差分だけが出ます。\n` +
-            `生で実行する必要があるときだけ、先頭に AGENT_RAW=1 を付けてください。\n` +
+            `生で実行する必要があるときだけ、先頭に ${raw} を付けてください。\n` +
             `(実行場所: ${root})`,
         );
       }
     }
     if (bounded) continue;
-    for (const u of UNBOUNDED) {
+    for (const u of unbounded) {
       if (u.re.test(seg)) {
-        return deny(`\`${seg.slice(0, 50)}\` は出力量が予測できません。${u.hint}\n必要なら AGENT_RAW=1 を先頭に付けてください。`);
+        return deny(`\`${seg.slice(0, 50)}\` は出力量が予測できません。${u.hint}\n必要なら ${raw} を先頭に付けてください。`);
       }
     }
   }

@@ -13,7 +13,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, repoRoot, stripAnsi } from '../src/util.mjs';
+import { loadConfig, repoRoot, shellPath, stripAnsi } from '../src/util.mjs';
 
 /**
  * `.agent/config.yml` の `session.status_command` を実行して現在地を注入する。
@@ -40,6 +40,9 @@ function runStatus(root, cfg) {
   try {
     out = execSync(cmd, {
       cwd: root,
+      // status_command も POSIX sh の形で書かれる (sightline の bin/status は bash)。
+      // Windows で既定の cmd.exe に落とすと動かないので runCapture と同じ解決を使う。
+      shell: shellPath(),
       encoding: 'utf8',
       timeout: (cfg.session.status_timeout_sec ?? 30) * 1000,
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -9,6 +9,15 @@ commands:
   # build: pnpm build
   # typecheck: pnpm exec tsc --noEmit
 
+session:
+  # SessionStart で実行して「現在地」をプレフィクスに注入する。既定では何もしない。
+  # **ここで検証コマンドを走らせないこと。** 開始がブロックされ、タイムアウトすると
+  # (途中出力は残るが) 不完全になり、しかも結果は最初の編集で嘘になる。
+  # 載せる価値があるのは作業中に変わらない事実だけ。検証は `agent last` で記録を読む。
+  # status_command: bin/status
+  # status_timeout_sec: 30
+  # status_max_lines: 40   # 省略時は limits.max_lines
+
 limits:
   max_failures: 5      # 表示する失敗の最大件数
   max_lines: 40        # agent の出力行数の絶対上限

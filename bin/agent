@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { emit, fmt, loadConfig, repoRoot } from '../src/util.mjs';
 import check from '../src/cmd/check.mjs';
+import init from '../src/cmd/init.mjs';
 import last from '../src/cmd/last.mjs';
 import stats from '../src/cmd/stats.mjs';
 import delegate from '../src/cmd/delegate.mjs';
@@ -17,6 +18,7 @@ const HELP = `agent — コンテキスト予算つきのプロジェクトラ�
   agent age                                      キャッシュ残り時間とコンテキストサイズ
   agent delegate [--write] [-m <model>] "<task>" 安いモデル(opencode)へ委譲
   agent runs                                     退避ログ一覧
+  agent init [--write] [--force]                 このプロジェクト用 .claude/settings.json を生成
 
 すべての出力は .agent/config.yml の limits.max_lines 以内に収まる。
 全文はディスクにあり、agent log で取りに行ける。`;
@@ -33,6 +35,9 @@ switch (cmd) {
   case 'build':
   case 'typecheck':
     exit(check(cmd, argv, cfg));
+    break;
+  case 'init':
+    exit(init(argv, cfg));
     break;
   case 'last':
     exit(last(argv, cfg));

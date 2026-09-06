@@ -124,10 +124,52 @@ export function detectCommand(target, root) {
   return null;
 }
 
+/**
+ * どのシェルでコマンドを実行するか。
+ *
+ * `.agent/config.yml` の commands は POSIX sh の形で書かれている
+ * (`cargo fmt --all -- --check && cargo clippy ...`, `node --test test/*.test.mjs`)。
+ * Windows で `shell: true` のままにすると **cmd.exe** になり、**グロブを展開しない**ので
+ * `test/*.test.mjs` がリテラルのまま渡り、AIDE 自身のテストが動かない。
+ * だから Windows では Git Bash を探して明示的に渡す。
+ *
+ * `CLAUDE_CODE_GIT_BASH_PATH` は Claude Code が Bash ツールの場所を知るのに使う変数。
+ * ユーザーが既に設定しているなら**同じ値を再利用する**のが一番ずれない。
+ *
+ * 見つからなければ cmd.exe に落ちる。グロブを使わないコマンドはそれでも動くので、
+ * ここで止めるより動かした方がよい。落ちたことは agent init が知らせる。
+ */
+export function shellFor(env = process.env, platform = process.platform, exists = fs.existsSync) {
+  if (platform !== 'win32') return true;
+  const cands = [
+    env.AGENT_SHELL,
+    env.CLAUDE_CODE_GIT_BASH_PATH,
+    env.ProgramFiles && `${env.ProgramFiles}\\Git\\bin\\bash.exe`,
+    env['ProgramFiles(x86)'] && `${env['ProgramFiles(x86)']}\\Git\\bin\\bash.exe`,
+    env.LOCALAPPDATA && `${env.LOCALAPPDATA}\\Programs\\Git\\bin\\bash.exe`,
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+  ].filter(Boolean);
+  for (const c of cands) {
+    try {
+      if (exists(c)) return c;
+    } catch {}
+  }
+  return true;
+}
+
+/**
+ * execSync 用。**execSync の shell は真偽値を受け付けない** (文字列か未指定のみ) ので、
+ * 既定シェルでよい場合は undefined を返す。spawnSync 用の shellFor と使い分ける。
+ */
+export function shellPath() {
+  const s = shellFor();
+  return typeof s === 'string' ? s : undefined;
+}
+
 export function runCapture(cmd, opts = {}) {
   const t0 = Date.now();
   const r = spawnSync(cmd, {
-    shell: true,
+    shell: shellFor(),
     cwd: opts.cwd || process.cwd(),
     encoding: 'utf8',
     maxBuffer: 256 * 1024 * 1024,
