@@ -112,10 +112,20 @@ const parsers = [
           failures.push({ file: loc?.[1] || '', line: Number(loc?.[2]) || null, name: e[1] || 'error', msg: e[2] });
         }
       }
-      const c = o.match(/test result: \w+\. (\d+) passed; (\d+) failed/);
+      // cargo はテスト対象ごとに集計行を出す (lib / 各 integration / doc-tests)。
+      // **最初の1本だけ見ると嘘になる。** workspace だと lib が 0 passed で、
+      // 本体の 15 passed が2本目以降に来る。全部足す。
+      const sums = [...o.matchAll(/^test result: \w+\. (\d+) passed; (\d+) failed(?:; (\d+) ignored)?/gm)];
+      const sum = (i) => sums.reduce((a, m) => a + Number(m[i] || 0), 0);
       return {
-        counts: { passed: Number(c?.[1] || 0), failed: Number(c?.[2] || failures.length), skipped: 0 },
+        counts: {
+          passed: sum(1),
+          failed: sums.length ? sum(2) : failures.length,
+          skipped: sum(3),
+        },
         failures: dedupe(failures),
+        // 集計行が出ている＝cargo が全部走り切った。全部 0 でも generic に落とさない。
+        exact: sums.length > 0,
       };
     },
   },
@@ -144,6 +154,30 @@ const parsers = [
       }
       const c = o.match(/(\d+)\s+problems?\s+\((\d+)\s+errors?/);
       return { counts: { failed: Number(c?.[2] || failures.length), passed: 0, skipped: 0 }, failures };
+    },
+  },
+  {
+    // node --test (spec reporter)。集計行が「ℹ fail 0」なので、generic に落ちると
+    // /\bFAIL\b/i がこの行に当たって「0 passed / 1 failed」という嘘を出す(実際に踏んだ)。
+    name: 'node:test',
+    test: (o) => /^ℹ\s+(?:tests|pass|fail)\s+\d+/m.test(o),
+    parse(o) {
+      const lines = o.split('\n');
+      const n = (re) => Number(o.match(re)?.[1] ?? 0);
+      const failures = [];
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(/^\s*✖\s+(.+?)\s*(?:\([\d.]+m?s\))?\s*$/);
+        if (!m) continue;
+        const blk = block(lines, i + 1, 8);
+        // 位置はスタックトレース側にあるので gist ではなくブロック全体から拾う
+        const loc = blk.join('\n').match(/([\w./-]+\.(?:mjs|cjs|js|ts)):(\d+)/);
+        failures.push({ file: loc?.[1] || '', line: Number(loc?.[2]) || null, name: m[1], msg: gist(blk) });
+      }
+      return {
+        counts: { passed: n(/^ℹ\s+pass\s+(\d+)/m), failed: n(/^ℹ\s+fail\s+(\d+)/m), skipped: n(/^ℹ\s+skipped\s+(\d+)/m) },
+        failures,
+        exact: /^ℹ\s+tests\s+\d+/m.test(o),
+      };
     },
   },
 ];
@@ -183,7 +217,12 @@ export function parseOutput(out) {
     if (!p.test(out)) continue;
     try {
       const r = p.parse(out);
-      if (r.failures.length || r.counts.passed || r.counts.failed) return { framework: p.name, ...r };
+      // `exact` は「そのツールの集計行を読めた」の意味。**全部 0 でも採用する。**
+      // これが無いと「0 passed / 0 failed」が「何も取れなかった」と区別できず、
+      // generic に落ちて集計行の "failed" という語を失敗として数え始める。
+      if (r.exact || r.failures.length || r.counts.passed || r.counts.failed) {
+        return { framework: p.name, ...r };
+      }
     } catch {}
   }
   return { framework: 'generic', ...generic(out) };
