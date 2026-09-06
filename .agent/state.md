@@ -20,6 +20,9 @@ AIDE の実測フェーズ。実装は一巡したので、実プロジェクト
 
 ## 次の TODO
 
+- [ ] **`go test` パーサの検出条件 `/_test\.go|go: /` が緩い。** `go: ` が「car**go: **」に
+      当たるため、AIDE 自身の `agent test` が `73 passed [go test]` と誤判定する
+      (真値は node:test の 4 passed)。`^ok\s+\S+` 等に絞るか、判定順を見直す
 - [ ] **実プロジェクト (groomaster / nyaque) で `agent test` を回し、パーサ精度を実データで確認**
 - [ ] read-dedup を 1 セッション有効にして誤検知率を測る (多ければ deny → warn に後退)
 - [ ] `agent stats` をトークン基準に直す (現状は文字数ベースで同じ錯覚を再生産する)
