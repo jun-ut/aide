@@ -2,6 +2,8 @@
 # ここは「自動検出を上書きしたいとき」だけ書く。
 
 commands:
+  # AIDE 自身は package.json を持たないので自動検出できない。ここだけ明示する。
+  test: node --test test/*.test.mjs
   # test: pnpm vitest run
   # lint: pnpm eslint .
   # build: pnpm build

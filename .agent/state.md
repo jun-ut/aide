@@ -11,10 +11,12 @@ AIDE の実測フェーズ。実装は一巡したので、実プロジェクト
 
 - `bin/agent` (test/lint/build/typecheck/log/runs/stats/age/delegate) と hook 5 種を実装、全経路動作確認
 - 加重コストを実測 → cacheRead 62% / cacheWrite 29% / output 9% ([ADR-0001](../docs/decisions/0001-context-economics.md))
-- 測定を 3 回訂正。確定版は [ADR-0004](../docs/decisions/0004-edit-payload-and-ast.md)
-- **確定した加重内訳**: tool_result 49.1% / Write 18.6% / Edit 14.8% / thinking 7.9% / Bash 5.6% / 可視テキスト 2.4%
+- **確定した加重内訳** ([ADR-0004](../docs/decisions/0004-edit-payload-and-ast.md), 測定を 3 回訂正した後の確定値):
+  tool_result 49.1% / Write 18.6% / Edit 14.8% / thinking 7.9% / Bash 5.6% / 可視テキスト 2.4%
+- 2026-09-03 `../sightline` に環境を導入。**本体はコピーせず絶対パス参照**で hook/CLI が正しく動くことを確認。
+  ついでに AIDE 自身の `commands.test` を設定 (`node --test test/*.test.mjs`) し、`node:test` パーサを追加
 - **1 往復 = 34,759 加重トークン**（平均 ctx 347k）。トークン削減より往復削減が効く
-- guard-bash が 4 回誤爆 → `test/guard-bash.test.mjs` (18 ケース) で固定
+- guard-bash が 5 回誤爆 (最新: find の絶対パス誤判定) → `test/guard-bash.test.mjs` (23 ケース) で固定
 
 ## 次の TODO
 
