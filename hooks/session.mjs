@@ -13,7 +13,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, repoRoot } from '../src/util.mjs';
+import { loadConfig, repoRoot, stripAnsi } from '../src/util.mjs';
 
 /**
  * `.agent/config.yml` の `session.status_command` を実行して現在地を注入する。
@@ -25,8 +25,20 @@ import { loadConfig, repoRoot } from '../src/util.mjs';
 function runStatus(root, cfg) {
   const cmd = cfg.session?.status_command;
   if (!cmd) return '';
+  // **ここはプレフィクスに入る = トークン単価が最も高い置き場所**なので、
+  // 他のどの出力経路より厳しく絞る。上限が無いと、status_command が行儀よく
+  // 書かれているかどうかに全セッションのコストが依存してしまう。
+  const max = cfg.session.status_max_lines ?? cfg.limits?.max_lines ?? 40;
+  const clip = (s) => {
+    const t = String(s ?? '').trim();
+    if (!t) return '';
+    const arr = t.split('\n');
+    if (arr.length <= max) return t;
+    return [...arr.slice(0, max), `… +${arr.length - max} 行 (${cmd} を直接叩く)`].join('\n');
+  };
+  let out;
   try {
-    return execSync(cmd, {
+    out = execSync(cmd, {
       cwd: root,
       encoding: 'utf8',
       timeout: (cfg.session.status_timeout_sec ?? 30) * 1000,
@@ -36,8 +48,15 @@ function runStatus(root, cfg) {
       .replace(/\[[0-9;]*m/g, '')
       .trim();
   } catch (e) {
-    return `(${cmd} が失敗した: ${String(e.message).split('\n')[0]})`;
+    // **途中まで出た分を捨てない。** execSync はタイムアウトでも非ゼロ終了でも
+    // e.stdout に出力を持っている。ここで e.message だけ返すと、status_command の
+    // 最後の 1 手が遅いだけで git も TODO も地図も全部消える。しかもそれが起きるのは
+    // ビルドが冷えているとき ＝ **新規 clone 直後**、地図が最も要る場面。
+    const why = String(e.message).split('\n')[0];
+    const partial = clip(stripAnsi(e.stdout));
+    return partial ? `${partial}\n(注: ${cmd} は完走しなかった: ${why})` : `(${cmd} が失敗した: ${why})`;
   }
+  return clip(out);
 }
 
 const event = process.argv[2] || 'session-start';
