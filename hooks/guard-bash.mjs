@@ -1,11 +1,21 @@
 #!/usr/bin/env node
 /**
- * PreToolUse(Bash) — 生のテスト/lint/build と、出力が青天井なコマンドを止める。
+ * PreToolUse(Bash) — 止めるものは 3 種類。
  *
- * AGENTS.md に「agent test を使え」と書いても守られないことがある。hook は必ず守られる。
+ * 1. 生のテスト/lint/build   → agent ラッパへ誘導 (WRAPPED)
+ * 2. 出力が青天井のコマンド   → 絞り方を指示 (UNBOUNDED)
+ * 3. **シェル経由のソース書き換え** → Write/Edit へ誘導 (WRITE)
+ *
+ * AGENTS.md に書いても守られないことがある。hook は必ず守られる。
  * これが「強制できるものは hook へ」の実装。
  *
- * 逃げ道: 先頭に AGENT_RAW=1 を付ければ素通しする(agent 自身の内部実行もこれを使う)。
+ * 3 は 2026-09-04 に追加した。それまで CLAUDE.md / AGENTS.md に
+ * 「sed -i 禁止」と書いてあるだけで**何も強制されていなかった**。
+ * 実際に sed -i / perl -pi / heredoc が素通りすることを確認して分かった。
+ *
+ * 逃げ道:
+ * - 先頭に AGENT_RAW=1     … 全部素通し (agent 自身の内部実行もこれを使う)
+ * - 末尾に # ALLOW-SCRIPT-EDIT … 3 のみ素通し (3ファイル以上の一括置換・構造化データ変換用)
  */
 import { repoRoot } from '../src/util.mjs';
 
@@ -27,13 +37,61 @@ const UNBOUNDED = [
   // 対象は「ファイルを丸ごと吐く cat」だけ。
   // cat > f / cat << EOF は書き込み、引数なしの cat -v はパイプの受け手なので除外する。
   { re: /^cat\s+(?:-\S+\s+)*[^-<>\s][^<>]*$/, hint: "sed -n 'START,ENDp' か Read(offset/limit) を使ってください" },
-  { re: /^find\s+\//, hint: 'ルートからの find は範囲を絞ってください' },
+  // 絶対パスからの find。-maxdepth / -prune / -quit で絞ってあれば許す。
+  // 単に /^find\s+\// だと「ルートから」のつもりで絶対パス全部に当たる(実際に踏んだ)。
+  { re: /^find\s+\/(?!.*\s-(?:maxdepth|prune|quit)\b)/, hint: 'find は -maxdepth か -prune で範囲を絞ってください' },
   { re: /^git\s+log\b(?!.*(-n\s|--oneline|-\d))/, hint: 'git log は -n と --oneline を付けてください' },
   { re: /^git\s+diff\b(?!.*(--stat|--name-only|--\s))/, hint: 'git diff は --stat か --name-only で始めてください' },
   { re: /^npm\s+ls\b(?!.*--depth)/, hint: 'npm ls は --depth 0 を付けてください' },
 ];
 
 const BOUNDED = /\b(head|tail|wc|jq|cut|uniq)\b|\bgrep\b|\brg\b|\bsed\s+-n\b/;
+
+// ---- シェル経由のソース書き換え ----
+//
+// Write/Edit なら差分がユーザーに見え、PostToolUse の formatter/lint が走り、
+// ファイル単位の権限ルールも効く。シェル経由だとそのどれも起きない。
+//
+// 誤爆すると hook ごと無効化されるので、**対象を絞る**:
+// ソースらしい拡張子で、かつ生成物・一時ファイル・リポジトリ外でないものだけ。
+// `> out.log` も `> /dev/null` も `> /tmp/...` も通る。
+const SOURCE_EXT =
+  /\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|go|rb|php|java|kt|swift|c|h|cc|cpp|hpp|cs|sh|bash|zsh|sql|css|scss|html|vue|svelte|sl|md|json|ya?ml|toml)$/i;
+
+const WRITE_OK = /^(?:\/tmp\/|\/dev\/|\/var\/|\/proc\/)|(?:^|\/)(?:target|node_modules|dist|build|coverage|\.git|\.agent)\//;
+
+// その場書き換え。対象が何であれ Write/Edit で書ける。
+const INPLACE = [
+  { re: /^g?sed\s+(?:--?\S+\s+)*(?:-\S*i\S*|--in-place\S*)(?:\s|$)/, what: 'sed -i' },
+  { re: /^perl\s+(?:-\S+\s+)*-\S*i\S*(?:\s|$)/, what: 'perl -i' },
+  { re: /^ruby\s+(?:-\S+\s+)*-\S*i\S*(?:\s|$)/, what: 'ruby -i' },
+];
+
+/** 断片が書き込む先を集める。`2>&1` や `>&2` は捕まえない。 */
+function writeTargets(seg) {
+  const out = [];
+  for (const m of seg.matchAll(/(?:^|\s)>>?\s*(['"]?)([^\s'"|&;<>]+)\1/g)) out.push(m[2]);
+  const tee = seg.match(/^tee\s+(?:-\S+\s+)*(\S+)/);
+  if (tee) out.push(tee[1].replace(/^['"]|['"]$/g, ''));
+  return out;
+}
+
+/** `python -c "... open(f, 'w') ..."` のようなインライン書き込み。 */
+function inlineWrite(seg) {
+  if (!/^(?:python\d?|node)\s+(?:-\S+\s+)*-(?:c|e|p)\b/.test(seg)) return false;
+  return /\bopen\s*\([^)]*['"][wa]\+?['"]/.test(seg) || /\bwriteFileSync\s*\(/.test(seg);
+}
+
+function scriptEdit(seg) {
+  for (const p of INPLACE) {
+    if (p.re.test(seg)) return `${p.what} での書き換え`;
+  }
+  if (inlineWrite(seg)) return 'スクリプトからの直接書き込み';
+  for (const t of writeTargets(seg)) {
+    if (SOURCE_EXT.test(t) && !WRITE_OK.test(t)) return `\`${t}\` へのリダイレクト`;
+  }
+  return null;
+}
 
 /**
  * heredoc の本体を落とす。中身はデータであってコマンドではない。
@@ -105,8 +163,21 @@ process.stdin.on('end', () => {
   const body = stripHeredocs(cmd);
   const segs = segments(body);
   const bounded = BOUNDED.test(body);
+  const allowScriptEdit = /#\s*ALLOW-SCRIPT-EDIT\b/.test(cmd);
 
   for (const seg of segs) {
+    if (!allowScriptEdit) {
+      const how = scriptEdit(seg);
+      if (how) {
+        return deny(
+          `${how} は禁止です。Read → Edit / Write を使ってください。\n` +
+            `理由: シェル経由だと差分がユーザーに見えず、PostToolUse の formatter / lint が走らず、\n` +
+            `ファイル単位の権限ルールも迂回します。\n` +
+            `例外 (3 ファイル以上の機械的な一括置換、構造化データの変換、生成物・使い捨ての一時ファイル) は、\n` +
+            `理由を 1 行述べたうえで末尾に \`# ALLOW-SCRIPT-EDIT\` を付けてください。`,
+        );
+      }
+    }
     for (const w of WRAPPED) {
       if (w.re.test(seg)) {
         return deny(

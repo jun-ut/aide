@@ -11,8 +11,11 @@ const t = (cmd, want) => {
   console.log(`${o === want ? 'ok  ' : 'NG  '}${o.toUpperCase().padEnd(5)} ${JSON.stringify(cmd).slice(0, 64)}`);
 };
 
-t("cat > a.mjs <<'EOF'\nconst re=/(test|vitest|jest)/;\npnpm test\nEOF\nnode a.mjs", 'allow'); // heredoc本体は無視
-t("cat > a.mjs <<'EOF'\nx\nEOF\npnpm test", 'deny'); // heredoc後の実コマンドは見る
+// 書き込み先を /tmp にしてある。リポジトリ内の .mjs へ書くのは
+// WRITE 規則の担当になった (test/guard-write.test.mjs)。ここで見たいのは
+// 「heredoc の本体をコマンドと誤読しないこと」だけ。
+t("cat > /tmp/a.mjs <<'EOF'\nconst re=/(test|vitest|jest)/;\npnpm test\nEOF\nnode /tmp/a.mjs", 'allow'); // heredoc本体は無視
+t("cat > /tmp/a.mjs <<'EOF'\nx\nEOF\npnpm test", 'deny'); // heredoc後の実コマンドは見る
 t('pnpm test', 'deny');
 t('cd w && pnpm test', 'deny');
 t("echo 'pnpm test'", 'allow');
@@ -28,6 +31,11 @@ t('git diff', 'deny');
 t('git diff --stat', 'allow');
 t('grep -rn x src', 'allow');
 t('find / -name x', 'deny');
+t('find /home/jun -name x', 'deny'); // 絶対パスでも絞られていなければ止める
+t('find /home/jun/project/sightline -maxdepth 3', 'allow');
+t("find /home/jun/project/sightline -maxdepth 3 -not -path '*/.git/*' | sort", 'allow'); // 実際に誤爆した形
+t('find /etc -type d -name x -prune -o -print', 'allow');
+t('find . -name x', 'allow'); // 相対パスは対象外のまま
 t('node -e "console.log(1)"', 'allow');
 console.log(bad ? `\n${bad} 件 NG` : '\n全件 ok');
 process.exit(bad ? 1 : 0);
