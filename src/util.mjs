@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
@@ -122,6 +123,33 @@ export function detectCommand(target, root) {
     if (target === 'lint') return 'cargo clippy';
   }
   return null;
+}
+
+/**
+ * Claude Code が transcript を置くディレクトリ (`~/.claude/projects/<slug>`)。
+ *
+ * slug は cwd の区切りを `-` に潰したもの。**Windows では `:` も潰れる**ので、
+ * `C:\Hub\Project\aide` → `c--Hub-Project-aide` になる (実測)。`[/\\.]` だけを見ていた
+ * 頃は `C:-Hub-...` を探して必ず外し、`agent stats` / `agent age` が黙って
+ * 「transcript なし」になっていた。
+ *
+ * ドライブ文字の大小は Claude Code に渡った cwd 次第で揺れる。当てに行かず、
+ * 候補を試したうえで最後は大小無視で実ディレクトリを拾う。
+ */
+export function projectDir(cwd = process.cwd()) {
+  const base = path.join(os.homedir(), '.claude', 'projects');
+  const abs = path.resolve(cwd);
+  const slug = (s) => s.replace(/[/\\.:]/g, '-');
+  const cands = [slug(abs)];
+  if (/^[a-zA-Z]:/.test(abs)) {
+    cands.push(slug(abs[0].toLowerCase() + abs.slice(1)), slug(abs[0].toUpperCase() + abs.slice(1)));
+  }
+  for (const c of cands) if (fs.existsSync(path.join(base, c))) return path.join(base, c);
+  try {
+    const hit = fs.readdirSync(base).find((d) => d.toLowerCase() === cands[0].toLowerCase());
+    if (hit) return path.join(base, hit);
+  } catch {}
+  return path.join(base, cands[0]);
 }
 
 /**

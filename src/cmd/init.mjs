@@ -16,15 +16,23 @@ import { shellFor } from '../util.mjs';
 
 const AIDE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** `node "<絶対パス>"`。JSON.stringify が Windows の `\` を正しく escape する。 */
+/**
+ * `node "<絶対パス>"`。空白を含むパスのために引用符で囲むだけにする。
+ *
+ * **JSON.stringify で囲まないこと。** Windows では `\` が `\\` に化けたものが
+ * そのままシェルへ渡る (`node "C:\\Hub\\...\\session.mjs"`)。動きはするが読めないし、
+ * settings.json へ書き出すときの escape は writeFileSync 側の JSON.stringify が別途やる。
+ */
+const q = (p) => `"${p.replace(/"/g, '\\"')}"`;
+
 const hook = (file, arg) => ({
   type: 'command',
-  command: `node ${JSON.stringify(path.join(AIDE, 'hooks', file))}${arg ? ` ${arg}` : ''}`,
+  command: `node ${q(path.join(AIDE, 'hooks', file))}${arg ? ` ${arg}` : ''}`,
 });
 
 export function settings() {
   return {
-    statusLine: { type: 'command', command: `node ${JSON.stringify(path.join(AIDE, 'hooks', 'statusline.mjs'))}` },
+    statusLine: { type: 'command', command: `node ${q(path.join(AIDE, 'hooks', 'statusline.mjs'))}` },
     hooks: {
       SessionStart: [{ hooks: [hook('session.mjs', 'session-start')] }],
       PreCompact: [{ hooks: [hook('session.mjs', 'pre-compact')] }],

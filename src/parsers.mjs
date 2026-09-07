@@ -79,7 +79,13 @@ const parsers = [
   },
   {
     name: 'go test',
-    test: (o) => /^(ok|FAIL|---\s+FAIL)/m.test(o) && /_test\.go|go: /.test(o),
+    // 検出は **go にしか出ない形** で見る。`go: ` を素で探すと "car**go: **" に当たり、
+    // `ok  ` 始まりの行を自前で print する node:test の出力が go と誤判定される。
+    // そうなると失敗件数が丸ごと 0 になる (実際に AIDE 自身のテストで起きた)。
+    // `ok  <pkg>  0.01s` / `(cached)` は go の集計行だけの形。
+    test: (o) =>
+      /^ok\s+\S+\s+(?:[\d.]+m?s|\(cached\))/m.test(o) ||
+      (/^(?:FAIL\s+\S+|---\s+FAIL:)/m.test(o) && /_test\.go|^go:\s/m.test(o)),
     parse(o) {
       const lines = o.split('\n');
       const failures = [];
@@ -90,7 +96,8 @@ const parsers = [
         const loc = (blk[0] || '').match(/(\S+\.go):(\d+)/);
         failures.push({ file: loc?.[1] || '', line: Number(loc?.[2]) || null, name: m[1], msg: gist(blk) });
       }
-      return { counts: { failed: failures.length, passed: (o.match(/^ok\s/gm) || []).length, skipped: 0 }, failures };
+      const passed = (o.match(/^ok\s+\S+\s+(?:[\d.]+m?s|\(cached\))/gm) || []).length;
+      return { counts: { failed: failures.length, passed, skipped: 0 }, failures };
     },
   },
   {

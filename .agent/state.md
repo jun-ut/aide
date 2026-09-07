@@ -6,9 +6,17 @@
 ## 今の目標
 
 AIDE の実測フェーズ。実装は一巡したので、実プロジェクトで使って効果を数値化する。
-sightline での実運用で出た課題は一通り潰した。**次は Windows 実機での検証。**
+sightline での実運用で出た課題は一通り潰した。**Windows 実機検証は 2026-09-07 に完了。**
+次は Claude Code 再起動後に hook が実際に発火するかの確認と、実測の継続。
 
 ## 直近やったこと (5行以内)
+
+- **2026-09-07 Windows 11 実機で検証完了。** `agent test` が 9/9 PASS。詰まった順に:
+  テストの hook パスがリテラル `/home/jun/...` → Windows でカレントドライブ相対に解決され
+  全滅 / go パーサ誤検出が失敗 6 件を隠していた / transcript slug が `:` を潰さず
+  `agent stats` が黙って空 / `init` が JSON.stringify で囲み `\\` が化ける
+- **node が PATH に無いのが最大の落とし穴。** hook と statusline だけが静かに死ぬ
+  (`agent` は手で叩けるので動いて見える)。mise shims をユーザ PATH に追加して解決
 
 - **確定した加重内訳** ([ADR-0004](../docs/decisions/0004-edit-payload-and-ast.md)):
   tool_result 49.1% / Write 18.6% / Edit 14.8% / thinking 7.9% / Bash 5.6% / 可視テキスト 2.4%。
@@ -23,12 +31,9 @@ sightline での実運用で出た課題は一通り潰した。**次は Windows
 
 ## 次の TODO
 
-- [ ] **Windows 実機で検証する (最優先)。** コードは書いたが**一度も Windows で動かしていない**。
-      確認する順に: `agent init --write` → `agent test` (グロブ展開) → guard-bash の
-      PowerShell 経路 → `agent stats` の transcript slug
-- [ ] **`go test` パーサの検出条件 `/_test\.go|go: /` が緩い。** `go: ` が「car**go: **」に
-      当たるため、AIDE 自身の `agent test` が `140 passed [go test]` と誤判定する
-      (真値は node:test の 8 passed)。`^ok\s+\S+` 等に絞るか、判定順を見直す
+- [ ] **Claude Code 再起動後に hook が本当に発火するか見る (最優先)。**
+      判定は `.agent/run/<session_id>.json` ができるか。できていなければ PATH か
+      settings.json のどちらかがまだ効いていない
 - [ ] AIDE 自身に `commands.lint` が無い (`agent lint` が NO_COMMAND のまま)
 - [ ] read-dedup を 1 セッション有効にして誤検知率を測る (多ければ deny → warn に後退)
 - [ ] `agent stats` をトークン基準に直す (現状は文字数ベースで同じ錯覚を再生産する)
@@ -37,7 +42,7 @@ sightline での実運用で出た課題は一通り潰した。**次は Windows
 - [ ] 常駐ベースライン 22〜31k の棚卸し (無関係な Cloudflare skill 13 個)
 - [ ] `/handoff` skill (state.md 圧縮 + journal 追記 + docs 昇格の提案)
 
-## Windows 対応の現状 (2026-09-07)
+## Windows 対応の現状 (2026-09-07 実機検証済み)
 
 **方針: clone し直して移るのではなく、AIDE 側の POSIX 依存を外す。**
 1 つの clone を WSL と Windows の両方から触るのは**禁止**。9p 越しに mtime がずれ、
@@ -58,12 +63,25 @@ Claude Code 側の事実 (docs で確認済み):
 - [x] `WRITE_OK` に Windows の temp と `$null`。パスは `\` を `/` に正規化して判定
 - [x] `agent init [--write]` で settings.json 生成、`bin/agent.cmd`
 
+実機で追加で潰したもの (すべてテスト付き):
+- [x] テストの `HOOK` がリテラル絶対パス。Windows では `/home/...` が `C:\home\...` に
+      解決され hook が起動できず 6 件が「起動失敗」で落ちていた → `import.meta.url` 起点へ
+- [x] `go test` パーサの誤検出。`go: ` が「car**go: **」に当たり、`ok  ` 始まりの行を
+      自前で print する node:test の出力を go と誤判定 → **失敗 6 件が 0 failed に化けていた**。
+      検出を `^ok <pkg> <秒>` / `^go: ` に絞った
+- [x] transcript slug が `:` を潰していない。実測の命名は `C:\Hub\Project\aide` →
+      `c--Hub-Project-aide`。`util.mjs` の `projectDir()` に集約し、ドライブ文字の大小は
+      候補総当たり + 大小無視の実ディレクトリ探索で吸収
+- [x] `init` が `JSON.stringify` でパスを囲んでいた → `node "C:\\Hub\\..."` と二重の `\` に
+      化ける。素の引用符に変更 (settings.json への escape は書き出し側がやる)
+- [x] `delegate` は Git Bash が無い Windows で実行を拒む (POSIX 引用符が壊れるため)
+- [x] `.gitattributes` で `bin/agent` を `eol=lf` に固定 (CRLF だと POSIX 側で shebang が死ぬ)
+
 残り:
-- [ ] **実機検証** (上の TODO 最優先)
-- [ ] `src/cmd/delegate.mjs` の `shq()` は POSIX の引用符 escape。Git Bash 経由なら
-      正しいが、cmd.exe に落ちた場合は壊れる
-- [ ] `agent stats` の transcript slug (`path.resolve(cwd).replace(/[/\\.]/g,'-')`) が
-      Windows で Claude Code の実際の命名と一致するか未確認 (`C:` のコロンを見ていない)
+- [ ] **`node` を PATH に載せること自体が最大の落とし穴。** mise/nvm だと hook と
+      statusline だけが静かに死ぬ。`agent` は手で叩けるので気づけない
+- [ ] checked-in の `.claude/settings.json` を `agent init --write --force` で絶対パス化した。
+      **この clone は Windows 専用になった。** WSL 側の clone では init し直すこと
 - [ ] sightline の `bin/status` は bash。Git Bash 前提のまま許す (無ければ status が
       出ないだけで、途中出力を捨てない修正のおかげで起動は壊れない)
 

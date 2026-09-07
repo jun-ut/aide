@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { emit, fmt } from '../util.mjs';
+import { emit, fmt, projectDir } from '../util.mjs';
 
 /**
  * agent stats — 自分のトランスクリプトを実測する。
@@ -11,10 +11,7 @@ import { emit, fmt } from '../util.mjs';
  */
 const W = { read: 0.1, write: 2, input: 1, output: 5 };
 
-export function projectDir(cwd = process.cwd()) {
-  const slug = path.resolve(cwd).replace(/[/\\.]/g, '-');
-  return path.join(os.homedir(), '.claude', 'projects', slug);
-}
+export { projectDir };
 
 export function listTranscripts(dir, limit = 8) {
   if (!fs.existsSync(dir)) return [];

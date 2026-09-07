@@ -1,42 +1,68 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "node \"$CLAUDE_PROJECT_DIR/hooks/statusline.mjs\""
+    "command": "node \"C:\\Hub\\Project\\aide\\hooks\\statusline.mjs\""
   },
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/session.mjs\" session-start" }
+          {
+            "type": "command",
+            "command": "node \"C:\\Hub\\Project\\aide\\hooks\\session.mjs\" session-start"
+          }
         ]
       }
     ],
     "PreCompact": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/session.mjs\" pre-compact" }
+          {
+            "type": "command",
+            "command": "node \"C:\\Hub\\Project\\aide\\hooks\\session.mjs\" pre-compact"
+          }
         ]
       }
     ],
     "Stop": [
       {
-        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/session.mjs\" stop" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Hub\\Project\\aide\\hooks\\session.mjs\" stop"
+          }
+        ]
       }
     ],
     "PreToolUse": [
       {
         "matcher": "Read",
-        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/read-dedup.mjs\"" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Hub\\Project\\aide\\hooks\\read-dedup.mjs\""
+          }
+        ]
       },
       {
         "matcher": "Bash|PowerShell",
-        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/guard-bash.mjs\"" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Hub\\Project\\aide\\hooks\\guard-bash.mjs\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
-        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/session.mjs\" state-size" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:\\Hub\\Project\\aide\\hooks\\session.mjs\" state-size"
+          }
+        ]
       }
     ]
   }

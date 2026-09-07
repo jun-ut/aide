@@ -1,0 +1,5 @@
+* text=auto
+
+# `bin/agent` は shebang 付きで、POSIX 側では直接実行される。CRLF で checkout されると
+# `/usr/bin/env: 'node\r': No such file or directory` で落ちるので LF に固定する。
+bin/agent text eol=lf

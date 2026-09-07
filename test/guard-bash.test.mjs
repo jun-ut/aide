@@ -1,5 +1,8 @@
 import { execFileSync } from 'node:child_process';
-const HOOK = '/home/jun/project/aide/hooks/guard-bash.mjs';
+import { fileURLToPath } from 'node:url';
+// 絶対パスをリテラルで書かない。Windows では `/home/...` がカレントドライブ相対に
+// 解決され (`C:\home\...`)、hook が丸ごと起動できずテストが「起動失敗」で落ちる。
+const HOOK = fileURLToPath(new URL('../hooks/guard-bash.mjs', import.meta.url));
 let bad = 0;
 const t = (cmd, want) => {
   const o = JSON.parse(

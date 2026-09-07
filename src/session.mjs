@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { projectDir } from './util.mjs';
 
 /** 巨大な jsonl の末尾だけを読む(10MB を毎回全部読まないため) */
 export function tailLines(file, bytes = 512 * 1024) {
@@ -50,8 +50,7 @@ export function sessionInfo(transcriptPath, ttlMin = 60) {
 
 /** 現在のセッションの transcript を推測する(agent age を素で叩いたとき用) */
 export function guessTranscript(cwd = process.cwd()) {
-  const slug = path.resolve(cwd).replace(/[/\\.]/g, '-');
-  const dir = path.join(os.homedir(), '.claude', 'projects', slug);
+  const dir = projectDir(cwd);
   if (!fs.existsSync(dir)) return null;
   const files = fs
     .readdirSync(dir)

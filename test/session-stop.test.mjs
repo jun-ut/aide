@@ -2,8 +2,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = '/home/jun/project/aide/hooks/session.mjs';
+const HOOK = fileURLToPath(new URL('../hooks/session.mjs', import.meta.url));
 let bad = 0;
 
 /** 使い捨てのリポジトリを作る。実際の .agent/run/<sid>.json を経由して検証する。 */

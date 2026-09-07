@@ -49,6 +49,42 @@ command -v node   # → /home/you/.local/share/mise/installs/node/24/bin/node
 > 既存のグローバル設定に Windows パス (`C:\Users\...`) を指す hook が残っていると、
 > WSL 側では静かに失敗する。`~/.claude/settings.json` を確認すること。
 
+## 4.5 Windows (ネイティブ) の場合
+
+WSL は不要。Claude Code はネイティブ Windows を正式サポートする。手順は上と同じだが、
+**踏む順に** 次の 4 点だけ違う (2026-09-07 実機で確認済み)。
+
+1. **`node` を PATH に載せる。** ここが最初に効く。mise / nvm-windows を使っていると
+   `node` はユーザ PATH に無く、**hook と statusline が黙って起動しない**
+   (`agent` は自分で叩けるので動いているように見える)。発火しているかは
+   `.agent/run/<session_id>.json` ができるかで判る。
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable('PATH', "$env:LOCALAPPDATA\mise\shims;" + [Environment]::GetEnvironmentVariable('PATH','User'), 'User')
+   ```
+
+   PATH を変えたら **Claude Code を再起動する**。hook のコマンドは起動時に解決される。
+
+2. **`settings.json` は `agent init --write` で生成する。** checked-in の
+   `$CLAUDE_PROJECT_DIR` 形式は POSIX シェルの展開に依存していて、Windows のシェルでは
+   展開されない。`agent init` は絶対パスで書くのでどちらでも動く。
+   1 つの clone を WSL と Windows で共有しないこと ([state.md](../../.agent/state.md) の方針)。
+
+3. **Git for Windows を入れる。** 無いと `shell: true` = cmd.exe になり、
+   `node --test test/*.test.mjs` のグロブが展開されない。`agent init` が見つからなければ
+   警告を出す。`agent delegate` は POSIX の引用符を使うので、この場合は実行を拒む。
+
+4. **`agent` コマンドは `bin/agent.cmd`。** `bin` を PATH に足せば `agent test` が通る。
+   symlink は要らない。
+
+**確認 (PowerShell):**
+
+```powershell
+agent test
+'{"tool_name":"PowerShell","tool_input":{"command":"Set-Content src/x.mjs -Value hi"},"cwd":"C:\\path\\to\\repo"}' | node hooks/guard-bash.mjs   # → deny
+agent age    # transcript が引けているか (~/.claude/projects/<slug> の slug は `:` も `-` に潰れる)
+```
+
 ## 5. 効果を測る
 
 ```sh

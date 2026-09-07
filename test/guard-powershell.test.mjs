@@ -9,8 +9,9 @@
  * プラットフォームを変えただけで「ドキュメントに書いてあるだけ」に戻る。
  */
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = '/home/jun/project/aide/hooks/guard-bash.mjs';
+const HOOK = fileURLToPath(new URL('../hooks/guard-bash.mjs', import.meta.url));
 let bad = 0;
 
 const t = (cmd, want, note = '') => {

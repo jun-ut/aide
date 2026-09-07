@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { emit, fmt, runCapture, spill, stripAnsi } from '../util.mjs';
+import { emit, fmt, runCapture, shellFor, spill, stripAnsi } from '../util.mjs';
 
 /**
  * agent delegate — 安いモデル(opencode)へ丸投げする。
@@ -31,6 +31,17 @@ export default function delegate(argv, cfg) {
     ? 'You may edit files. Make the minimal change. Do not run destructive commands. Do not commit.'
     : 'READ-ONLY. Do not create, edit, or delete any file. Only investigate and report.';
   const prompt = `${guard}\nAnswer concisely: at most 20 lines. Cite file:line for every claim.\n\nTASK: ${task}`;
+
+  // 下の shq() は **POSIX の引用符**。Git Bash 経由なら正しいが、見つからず cmd.exe に
+  // 落ちた場合はシングルクォートがリテラルとして渡り、タスク文が黙って壊れる。
+  // 壊れた依頼を安いモデルに投げて誤答を持ち帰るより、ここで止める方がよい。
+  if (process.platform === 'win32' && shellFor() === true) {
+    console.log(
+      'delegate: Git Bash が見つかりません。cmd.exe では引用符の扱いが違い、タスク文が壊れます。\n' +
+        '  Git for Windows を入れるか、AGENT_SHELL / CLAUDE_CODE_GIT_BASH_PATH に bash.exe を指定してください。',
+    );
+    return 2;
+  }
 
   const before = write ? gitSnapshot(root) : null;
   const cmd = `opencode run -m ${shq(`${provider}/${model}`)} --format default ${shq(prompt)}`;
