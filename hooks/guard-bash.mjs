@@ -24,7 +24,39 @@
  *   PowerShell では `$env:AGENT_RAW=1;` / `$env:AGENT_RAW='1';` も同じ扱い。
  * - 末尾に # ALLOW-SCRIPT-EDIT … 3 のみ素通し (3ファイル以上の一括置換・構造化データ変換用)
  */
+import { statSync } from 'node:fs';
+import path from 'node:path';
 import { repoRoot } from '../src/util.mjs';
+
+/**
+ * 「出力量が予測できない」は**測れなかったとき**の話。引数がそのままファイル名で、
+ * 実在して、合計が小さいなら出力量は分かっている —— deny の前提が成り立たない。
+ *
+ * 閾値の根拠: これより小さいファイルは**どうせ全部読む**ので、止めても同じ内容を
+ * Read で読み直すだけになり、往復 1 回 (約 34,759 加重トークン) が丸損になる。
+ * 実際に 2 回そうなった —— 9〜30 行のファイル 7 個と、202 行のファイル 1 個。
+ * どちらも止められた後、同じ量を読んでいる。ここより大きいときだけ誘導に価値がある。
+ *
+ * 変数・グロブ・引用符が混じったら測れない。**そのときは今までどおり止める。**
+ */
+const MEASURABLE_BYTES = 8192;
+
+function measuredSmall(seg, cwd) {
+  const args = seg.replace(/^\w+\s+/, '').trim();
+  if (!args || /[$`*?~[\]{}<>|"']/.test(args)) return false;
+  let total = 0;
+  for (const a of args.split(/\s+/)) {
+    if (a.startsWith('-')) continue;
+    try {
+      const st = statSync(path.resolve(cwd, a));
+      if (!st.isFile()) return false;
+      total += st.size;
+    } catch {
+      return false;
+    }
+  }
+  return total > 0 && total <= MEASURABLE_BYTES;
+}
 
 // すべて「コマンド位置」に錨を打つ。そうしないと echo '...pnpm test...' のような
 // 引用符の中の文字列にまで反応してしまう(実際に踏んだ)。
@@ -50,7 +82,11 @@ const UNBOUNDED_ANY = [
 const UNBOUNDED_SH = [
   // 対象は「ファイルを丸ごと吐く cat」だけ。
   // cat > f / cat << EOF は書き込み、引数なしの cat -v はパイプの受け手なので除外する。
-  { re: /^cat\s+(?:-\S+\s+)*[^-<>\s][^<>]*$/, hint: "sed -n 'START,ENDp' か Read(offset/limit) を使ってください" },
+  {
+    re: /^cat\s+(?:-\S+\s+)*[^-<>\s][^<>]*$/,
+    measurable: true,
+    hint: "sed -n 'START,ENDp' か Read(offset/limit) を使ってください",
+  },
   // 絶対パスからの find。-maxdepth / -prune / -quit で絞ってあれば許す。
   // 単に /^find\s+\// だと「ルートから」のつもりで絶対パス全部に当たる(実際に踏んだ)。
   { re: /^find\s+\/(?!.*\s-(?:maxdepth|prune|quit)\b)/, hint: 'find は -maxdepth か -prune で範囲を絞ってください' },
@@ -237,7 +273,8 @@ process.stdin.on('end', () => {
 
   // どちらのツールから来たか。tool_input.command はどちらも同じ形で入る。
   const ps = j.tool_name === 'PowerShell';
-  const root = repoRoot(j.cwd || process.cwd());
+  const cwd = j.cwd || process.cwd();
+  const root = repoRoot(cwd);
   // heredoc は sh のもの。PowerShell の here-string (@" "@) には `|` を
   // コマンド位置と誤読させる形が無いので、そのまま流す。
   const body = ps ? cmd : stripHeredocs(cmd);
@@ -273,9 +310,10 @@ process.stdin.on('end', () => {
     }
     if (bounded) continue;
     for (const u of unbounded) {
-      if (u.re.test(seg)) {
-        return deny(`\`${seg.slice(0, 50)}\` は出力量が予測できません。${u.hint}\n必要なら ${raw} を先頭に付けてください。`);
-      }
+      if (!u.re.test(seg)) continue;
+      // 測れて小さいなら「予測できない」が嘘になる。止める理由が無い。
+      if (u.measurable && measuredSmall(seg, cwd)) continue;
+      return deny(`\`${seg.slice(0, 50)}\` は出力量が予測できません。${u.hint}\n必要なら ${raw} を先頭に付けてください。`);
     }
   }
   allow();
