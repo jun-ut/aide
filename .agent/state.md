@@ -7,10 +7,15 @@
 
 AIDE の実測フェーズ。実装は一巡したので、実プロジェクトで使って効果を数値化する。
 sightline での実運用で出た課題は一通り潰した。**Windows 実機検証は 2026-09-07 に完了。**
-次は Claude Code 再起動後に hook が実際に発火するかの確認と、実測の継続。
+**再起動後の hook 発火も 2026-09-07 に確認済み。** 次は実測の継続。
 
 ## 直近やったこと (5行以内)
 
+- **2026-09-07 実測の計測器を用意した。** read-dedup が deny と bypass を
+  `.agent/run/<sid>.denies.json` に残す → `agent stats` の「拒否(誤)」列。
+  同時に `再読込` 列が **deny された Read と範囲読みまで数えていた**のを修正
+  (hook を有効にするほど数字が増え、効果が消えて見える状態だった)。
+  test は 9 → 11 本 (`read-dedup` / `stats-reads` を新規追加)
 - **2026-09-07 Windows 11 実機で検証完了。** `agent test` が 9/9 PASS。詰まった順に:
   テストの hook パスがリテラル `/home/jun/...` → Windows でカレントドライブ相対に解決され
   全滅 / go パーサ誤検出が失敗 6 件を隠していた / transcript slug が `:` を潰さず
@@ -31,11 +36,19 @@ sightline での実運用で出た課題は一通り潰した。**Windows 実機
 
 ## 次の TODO
 
-- [ ] **Claude Code 再起動後に hook が本当に発火するか見る (最優先)。**
-      判定は `.agent/run/<session_id>.json` ができるか。できていなければ PATH か
-      settings.json のどちらかがまだ効いていない
+- [x] ~~Claude Code 再起動後に hook が本当に発火するか~~ → **全系統 OK** (2026-09-07)。
+      SessionStart (`.agent/run/<sid>.json` + state.md 注入) / PreToolUse guard は
+      Bash・PowerShell 両ツールで deny (PowerShell には `$env:AGENT_RAW='1';` を案内) /
+      statusline は `ctx 47k · cache 60m` を表示。node は mise shims で PATH 上
+- [ ] `agent test` の「9 passed」は node:test 自身の粒度 (`ℹ tests 9` = テストファイル 9 本)。
+      中の 141 アサーションは各ファイルが自前で `ok ` を print しているだけ。
+      **パーサの取りこぼしではない** (前回の go 誤検出と混同しないこと)
 - [ ] AIDE 自身に `commands.lint` が無い (`agent lint` が NO_COMMAND のまま)
-- [ ] read-dedup を 1 セッション有効にして誤検知率を測る (多ければ deny → warn に後退)
+- [ ] **read-dedup の誤検知率を 1 セッションぶん貯める (実測の本命)。** 計測器は用意済み:
+      `agent stats` の「拒否(誤)」= deny 件数(逃げ道を使われた件数)。
+      **逃げ道 `AGENT_NO_DEDUP=1` を使った = 止めたのが誤りだったと確定した**、が分子。
+      逃げ道を使わず諦めた分は数えられないので**下限値**。高ければ deny → warn に後退。
+      判断材料が要るときは `.agent/run/<sid>.denies.json` にファイル名と経過分が残っている
 - [ ] `agent stats` をトークン基準に直す (現状は文字数ベースで同じ錯覚を再生産する)
 - [ ] Bash の呼び出し回数 1,554 件を減らす複合コマンド (tool_result の 44%)
 - [ ] `agent map` — Aider 方式の定義索引。探索用 Bash の代替。**往復を増やさないことが条件**
@@ -111,7 +124,7 @@ Claude Code 側の事実 (docs で確認済み):
 `bin/{agent,agent.cmd}`, `src/{util,parsers,session}.mjs`,
 `src/cmd/{check,init,last,stats,delegate}.mjs`,
 `hooks/{statusline,read-dedup,guard-bash,session}.mjs`,
-`test/{guard-bash,guard-write,guard-powershell,parsers,session-stop,last,status-inject,shell,init}.test.mjs`
+`test/{guard-bash,guard-write,guard-powershell,parsers,session-stop,last,status-inject,shell,init,read-dedup,stats-reads}.test.mjs`
 
 ## 最重要の一行
 

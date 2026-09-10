@@ -13,6 +13,10 @@
  *   - offset/limit つきの部分読みは常に許可
  *   - AGENT_NO_DEDUP=1 で無効化
  *   - SessionStart / PreCompact で履歴をクリア(圧縮で消えた分は読み直して良い)
+ *
+ * 誤検知率の測り方: deny と、逃げ道 (AGENT_NO_DEDUP=1) を実際に使われた回数を
+ * `.agent/run/<sid>.denies.json` に残す。**逃げ道を使われた = 止めたのが誤りだった**
+ * なので bypass/deny が誤検知率の下限になる。`agent stats` の「拒否」列がこれ。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,15 +26,16 @@ const IMAGE = /\.(png|jpe?g|gif|webp|bmp|pdf)$/i;
 const IMAGE_WARN_BYTES = 150 * 1024;
 
 read(process.stdin, (j) => {
-  if (process.env.AGENT_NO_DEDUP === '1') return allow();
   const fp = j.tool_input?.file_path;
   if (!fp) return allow();
 
-  // 部分読みは常に許可(範囲を絞る行為はむしろ推奨したい)
+  // 部分読みは常に許可(範囲を絞る行為はむしろ推奨したい)。
+  // 逃げ道の判定より先に置く。範囲読みは元々止めないので bypass に数えてはいけない。
   if (j.tool_input?.offset != null || j.tool_input?.limit != null) return allow();
 
   const root = repoRoot(j.cwd || process.cwd());
-  const store = path.join(root, '.agent', 'run', `${j.session_id || 'default'}.reads.json`);
+  const sid = j.session_id || 'default';
+  const store = path.join(root, '.agent', 'run', `${sid}.reads.json`);
   const seen = readJson(store, {}) || {};
 
   let st;
@@ -41,8 +46,17 @@ read(process.stdin, (j) => {
   }
 
   const prev = seen[fp];
-  if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) {
+  const dup = !!prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size;
+
+  if (process.env.AGENT_NO_DEDUP === '1') {
+    // 止めるはずだったものを逃げ道で通した = 誤検知が 1 件確定した、ということ
+    if (dup) logEvent(root, sid, { type: 'bypass', file: fp, at: Date.now() });
+    return allow();
+  }
+
+  if (dup) {
     const mins = Math.round((Date.now() - prev.at) / 60000);
+    logEvent(root, sid, { type: 'deny', file: fp, at: Date.now(), agoMin: mins });
     return deny(
       `${path.basename(fp)} は ${mins} 分前に全文を読み込み済みで、以降 mtime も変わっていません。` +
         `内容はまだこのコンテキストにあります。\n` +
@@ -66,6 +80,11 @@ read(process.stdin, (j) => {
   allow();
 });
 
+function logEvent(root, sid, ev) {
+  const p = path.join(root, '.agent', 'run', `${sid}.denies.json`);
+  const log = readJson(p, []);
+  writeJson(p, [...(Array.isArray(log) ? log : []), ev]);
+}
 function allow(msg) {
   out({ permissionDecision: 'allow', ...(msg ? { permissionDecisionReason: msg } : {}) });
 }

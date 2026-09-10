@@ -1,7 +1,21 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { emit, fmt, projectDir } from '../util.mjs';
+import { emit, fmt, projectDir, readJson } from '../util.mjs';
+
+/**
+ * read-dedup が残した記録を読む。deny = 止めた回数、bypass = 逃げ道を使われた回数。
+ * **bypass/deny が誤検知率の下限**(逃げ道を使わずに諦めた分は数えられない)。
+ * --all では他プロジェクトの .agent を見に行けないので 0 のままになる。
+ */
+function denyStats(root, sid) {
+  const log = readJson(path.join(root, '.agent', 'run', `${sid}.denies.json`), []);
+  if (!Array.isArray(log)) return { deny: 0, bypass: 0 };
+  return {
+    deny: log.filter((e) => e.type === 'deny').length,
+    bypass: log.filter((e) => e.type === 'bypass').length,
+  };
+}
 
 /**
  * agent stats — 自分のトランスクリプトを実測する。
@@ -82,11 +96,18 @@ export function scan(file) {
         t.ch += raw.length;
         t.n++;
         if (name === 'Read') {
-          const fp = call?.input?.file_path || '?';
-          const e = s.reads.get(fp) || { n: 0, ch: 0 };
-          e.n++;
-          e.ch += raw.length;
-          s.reads.set(fp, e);
+          // 「再読込」は**通ってしまった全文の読み直し**だけを数える。
+          // read-dedup が止めた分 (is_error) を数えると、hook を有効にするほど
+          // 数字が増えて効果が消えて見える。範囲読みは推奨している側なので除く。
+          const inp = call?.input || {};
+          const counted = !b.is_error && inp.offset == null && inp.limit == null;
+          if (counted) {
+            const fp = inp.file_path || '?';
+            const e = s.reads.get(fp) || { n: 0, ch: 0 };
+            e.n++;
+            e.ch += raw.length;
+            s.reads.set(fp, e);
+          }
         }
       }
     }
@@ -123,13 +144,16 @@ export default function stats(argv, cfg) {
   });
 
   const L = [];
-  L.push('session   msgs  peak_ctx     加重tok  read/write/out   再読込  失効');
+  L.push('session   msgs  peak_ctx     加重tok  read/write/out   再読込  拒否(誤)  失効');
+  let D = { deny: 0, bypass: 0 };
   for (const s of rows.sort((a, b) => b.weighted - a.weighted)) {
     const id = path.basename(s.file).slice(0, 8);
+    const d = denyStats(cfg.__root, path.basename(s.file, '.jsonl'));
+    D = { deny: D.deny + d.deny, bypass: D.bypass + d.bypass };
     L.push(
       `${id}  ${String(s.msgs).padStart(4)}  ${fmt.n(s.peak).padStart(8)}  ${fmt.n(Math.round(s.weighted)).padStart(10)}` +
         `  ${pct(s.cr * W.read, s.weighted)}/${pct(s.cw * W.write, s.weighted)}/${pct(s.out * W.output, s.weighted)}` +
-        `  ${String(s.dupReads).padStart(5)}  ${String(s.expiry.length).padStart(3)}`,
+        `  ${String(s.dupReads).padStart(5)}  ${`${d.deny}(${d.bypass})`.padStart(7)}  ${String(s.expiry.length).padStart(3)}`,
     );
   }
   L.push('');
@@ -137,6 +161,12 @@ export default function stats(argv, cfg) {
     `合計加重 ${fmt.n(Math.round(T.w))}  ` +
       `(cacheRead ${pct(T.cr * W.read, T.w)} / cacheWrite ${pct(T.cw * W.write, T.w)} / output ${pct(T.out * W.output, T.w)})`,
   );
+  if (D.deny || D.bypass) {
+    L.push(
+      `read-dedup 拒否 ${D.deny} 件 / 逃げ道を使われた ${D.bypass} 件` +
+        (D.deny ? ` → 誤検知率 ${Math.round((D.bypass / D.deny) * 100)}% 以上` : ''),
+    );
+  }
 
   // 上位の無駄
   const dup = rows.flatMap((s) => [...s.reads].filter(([, e]) => e.n > 2).map(([f, e]) => ({ f, ...e })));
