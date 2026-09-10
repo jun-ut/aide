@@ -22,7 +22,15 @@ t("echo 'pnpm test'", 'allow');
 t('AGENT_RAW=1 pnpm test', 'allow');
 t('npx vitest run src', 'deny');
 t('python -m pytest -q', 'deny');
-t('cat src/util.mjs', 'deny');
+// 「出力量が予測できない」は**測れなかったとき**の話。実在するリテラルなパスで
+// 合計が小さいなら測れているので止めない。止めても同じ量を Read で読み直すだけで、
+// 往復 1 回 (約 34,759 加重トークン) が丸損になる (実際に 2 回そうなった)。
+t('cat src/util.mjs', 'deny'); // 8.9KB。ここから先は範囲読みへ誘導する価値がある
+t('cat src/session.mjs', 'allow'); // 2.4KB
+t('cat src/session.mjs src/cmd/last.mjs', 'allow'); // 複数でも合計で見る
+t('cat $f', 'deny'); // 変数は測れない
+t('cat src/*.mjs', 'deny'); // グロブも測れない
+t('cat does-not-exist.mjs', 'deny'); // 実在しないものも測れない
 t('cat f | head -5', 'allow');
 t('ls | cat -v', 'allow');
 t('git log', 'deny');

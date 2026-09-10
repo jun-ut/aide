@@ -22,6 +22,44 @@ function block(lines, i, max = 12) {
   return out;
 }
 
+/**
+ * cargo のテスト失敗ブロックから、panic の**本文**と位置を取り出す。
+ *
+ * `---- NAME stdout ----` の後はこうなっている。
+ *
+ *   <テストが println! したもの>
+ *   thread 'NAME' panicked at FILE:LINE:COL:
+ *   <本文>
+ *   note: run with `RUST_BACKTRACE=1` ...
+ *
+ * **`block()` を使ってはいけない。** あちらは空行で打ち切るが、panic の本文は
+ * 空行で始まることが多く (`assert!` の文言を `\n` で始めると必ずそうなる)、
+ * 本文が丸ごと落ちる。実際に落ちて、要約が位置だけになった。
+ *
+ * `panicked at` の行自体は捨てる —— 位置は呼ぶ側が見出しに出すので重複する。
+ */
+function cargoPanic(lines, i, max = 12) {
+  const out = [];
+  let at = null;
+  for (let j = i; j < lines.length && out.length < max; j++) {
+    const l = lines[j];
+    if (j > i && /^----\s/.test(l)) break;
+    if (/^(note: run with|failures:|test result:)/.test(l.trim())) break;
+    const m = l.match(/panicked at (\S+?):(\d+):\d+/);
+    if (m) {
+      at = { file: m[1], line: Number(m[2]) };
+      continue;
+    }
+    if (NOISE.test(l)) continue;
+    if (l.trim()) out.push(clean(l).slice(0, 200));
+  }
+  if (!at) {
+    const loc = out.join('\n').match(/(\S+\.rs):(\d+)/);
+    if (loc) at = { file: loc[1], line: Number(loc[2]) };
+  }
+  return { at, body: out };
+}
+
 /** 失敗ブロックから「本当に読みたい1〜2行」を選ぶ */
 function gist(lines) {
   const useful = lines.filter((l) => !/^(FAIL|PASS|ok|error|failures?:)\s*$/i.test(l.trim()));
@@ -102,11 +140,20 @@ const parsers = [
       for (let i = 0; i < lines.length; i++) {
         const m = lines[i].match(/^----\s+(\S+)\s+stdout\s+----/);
         if (m) {
-          const blk = block(lines, i + 1, 8);
-          const loc = gist(blk).match(/(\S+\.rs):(\d+)/);
-          failures.push({ file: loc?.[1] || '', line: Number(loc?.[2]) || null, name: m[1], msg: gist(blk) });
+          const { at, body } = cargoPanic(lines, i + 1);
+          failures.push({
+            file: at?.file || '',
+            line: at?.line ?? null,
+            name: m[1],
+            msg: body[0] || '',
+            body: body.slice(1),
+          });
         }
-        const e = lines[i].match(/^error(\[E\d+\])?:\s*(.+)$/);
+        // `error: test failed, to rerun pass ...` は失敗ではなく再実行の案内。
+        // 失敗として数えると、1 本落ちただけで見出しが 2 件に増える (実際に増えた)。
+        const e = /^error:\s*test failed, to rerun/.test(lines[i])
+          ? null
+          : lines[i].match(/^error(\[E\d+\])?:\s*(.+)$/);
         if (e) {
           const loc = (lines[i + 1] || '').match(/-->\s+(\S+):(\d+)/);
           failures.push({ file: loc?.[1] || '', line: Number(loc?.[2]) || null, name: e[1] || 'error', msg: e[2] });

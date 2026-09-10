@@ -20,6 +20,9 @@ sightline での実運用で出た課題は一通り潰した。**次は Windows
   行数上限。sightline の `bin/status` が **5.7s → 0.56s**
 - **Windows ネイティブ対応**: guard-bash が PowerShell を見る / `shellFor()` /
   `agent init` / `bin/agent.cmd`。テスト 88 → 140 ケース
+- 2026-09-10 sightline の実作業で出た**往復の無駄 3 件**を潰した: cargo の panic
+  本文が要約から落ちる (5 往復/セッション) / 測れる `cat` を止めていた / 150 行 hook
+  が刻ませる。**どれも「設計どおり動いた結果」**で、実測しないと出ない類
 
 ## 次の TODO
 

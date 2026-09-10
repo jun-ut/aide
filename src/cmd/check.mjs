@@ -62,10 +62,14 @@ export default function check(target, argv, cfg) {
     const loc = [f.file, f.line].filter(Boolean).join(':');
     lines.push(`  ${isNew(f) ? '✚' : '·'} ${[loc, f.name].filter(Boolean).join('  ') || f.msg}`);
     if (f.msg && (loc || f.name)) lines.push(`      ${f.msg}`);
+    // **本文は先頭の 1 件だけに付ける。** 直すのは常に 1 件目で、2 件目以降は
+    // 1 件目を直せば変わる。全件に付けると 40 行が本文で埋まって一覧が消える。
+    if (f === shown[0]) for (const b of f.body || []) lines.push(`      ${b}`);
   }
   if (parsed.failures.length > max) lines.push(`  … +${parsed.failures.length - max} more failures`);
-  lines.push(`log ${id}  ·  agent log ${id} --grep <re>`);
 
-  console.log(emit(lines, cfg.limits?.max_lines ?? 40));
+  // 到達経路は**必ず最後に残す** (契約 2)。溢れたときに削るのは本文の側。
+  const footer = `log ${id}  ·  agent log ${id} --grep <re>`;
+  console.log(`${emit(lines, (cfg.limits?.max_lines ?? 40) - 1)}\n${footer}`);
   return r.code;
 }

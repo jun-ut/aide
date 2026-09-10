@@ -149,16 +149,37 @@ process.stdin.on('end', () => {
       }
       if (!p.endsWith(path.join('.agent', 'state.md'))) return ok();
       const max = cfg.state?.max_lines ?? 150;
-      const n = readOr(statePath).split('\n').length;
-      if (n <= max) return ok();
+      const lines = readOr(statePath).split('\n');
+      if (lines.length <= max) return ok();
+      // **「あと何行」と「どこが太っているか」を事実として渡す。**
+      // 超過行数を自分で引き算させると 1〜2 行ずつ削り、そのたびにここで止まる
+      // (実際に 5 回連続で止まった)。1 回で削り切れる形にするのがこの hook の仕事。
+      const fat = fatSections(lines);
       return block(
-        `.agent/state.md が ${n} 行で上限 ${max} 行を超えました。` +
-          `古い経緯を .agent/journal/ に移し、定着した知識は docs/ に昇格させて、${max} 行以内に圧縮してください。`,
+        `.agent/state.md が ${lines.length} 行。上限 ${max} 行まで **あと ${lines.length - max} 行**削ってください。\n` +
+          (fat ? `長いのは: ${fat}\n` : '') +
+          `古い経緯は .agent/journal/ へ、定着した知識は docs/ へ。` +
+          `**1 回で削り切ること** —— 刻んで削ると、そのたびにここで止まります。`,
       );
     }
   }
   ok();
 });
+
+/** `## ` の節ごとの行数を数えて、長い順に 3 つ返す。削る場所を探させないため。 */
+function fatSections(lines) {
+  const secs = [];
+  for (const l of lines) {
+    const m = l.match(/^##+\s+(.+?)\s*$/);
+    if (m) secs.push({ name: m[1], n: 0 });
+    else if (secs.length) secs[secs.length - 1].n++;
+  }
+  return secs
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 3)
+    .map((s) => `${s.name} (${s.n} 行)`)
+    .join(' / ');
+}
 
 /** `.agent/` の下か。引き継ぎ (state.md) と経緯 (journal/) がここに入る。 */
 const isNotes = (root, p) => {
