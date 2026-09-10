@@ -11,6 +11,11 @@ sightline での実運用で出た課題は一通り潰した。**Windows 実機
 
 ## 直近やったこと (5行以内)
 
+- **2026-09-10 分岐していた 2 枝を合流させた** (`c53b885`)。衝突は journal の 1 か所
+  (両側が別日付の節を追記) だけ。**コードは自動マージが通ったうえで壊れた**:
+  origin 側の「実在して小さい `cat` は測れているので止めない」判定が cwd 起点で
+  statSync するのに、guard-bash のテストが cwd をリテラル `/home/jun/project/aide` で
+  渡しており Windows で全部 deny に落ちた。cwd も `import.meta.url` 起点へ。11/11 PASS
 - **2026-09-07 実測の計測器を用意した。** read-dedup が deny と bypass を
   `.agent/run/<sid>.denies.json` に残す → `agent stats` の「拒否(誤)」列。
   同時に `再読込` 列が **deny された Read と範囲読みまで数えていた**のを修正
