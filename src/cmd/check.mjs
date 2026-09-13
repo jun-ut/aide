@@ -13,7 +13,10 @@ import { failureId, parseOutput } from '../parsers.mjs';
  */
 export default function check(target, argv, cfg) {
   const root = cfg.__root;
-  const passthru = argv.includes('--') ? argv.slice(argv.indexOf('--') + 1).join(' ') : '';
+  // `agent build -- --release` も `agent build --release` も同じに扱う。
+  // **黙って落とさない。** 以前は `--` の後ろしか渡らず、`agent build --release` が
+  // debug ビルドになっていた —— 呼んだ側からは成功にしか見えないので気づけない。
+  const passthru = argv.filter((a) => a !== '--').join(' ');
   const cmd = [cfg.commands?.[target] || detectCommand(target, root), passthru].filter(Boolean).join(' ');
 
   if (!cmd) {
@@ -37,17 +40,19 @@ export default function check(target, argv, cfg) {
   writeJson(prevPath, { ids, code: r.code, counts: parsed.counts, id, at: new Date().toISOString() });
 
   const status = r.timedOut ? 'TIMEOUT' : r.code === 0 ? 'PASS' : 'FAIL';
-  const c = parsed.counts;
-  const tally =
-    c.passed || c.failed || c.skipped
-      ? `${c.passed} passed / ${c.failed} failed${c.skipped ? ` / ${c.skipped} skipped` : ''}`
-      : `exit ${r.code}`;
-
-  const head = `${target} ${status}  ${tally}  ${fmt.dur(r.ms)}  [${parsed.framework}]`;
+  const head = `${target} ${status}  ${fmt.tally(target, parsed.counts, r.code)}  ${fmt.dur(r.ms)}  [${parsed.framework}]`;
+  const loc = (f) => [f.file, f.line].filter(Boolean).join(':');
+  const title = (f) => [loc(f), f.name].filter(Boolean).join('  ') || f.msg;
+  // 到達経路は**必ず最後に残す** (契約 2)。溢れたときに削るのは本文の側。
+  // rustc / clippy の診断は複数行なので、`--grep` だけだと一致行しか出ない。-C を添える。
+  const footer = `log ${id}  ·  agent log ${id} --grep <re> [-C N]`;
 
   // 前回と完全に同じなら、ここで終わり。反復ループで効く。
+  // **ただし 1 件目だけは必ず出す。** 何が同じなのかが分からないと、結局
+  // 生で叩き直すことになり、往復を節約するどころか 1 回増える。
   if (same && r.code !== 0) {
-    console.log(`${head}\n  前回と同一 (${prev.id})  ·  agent log ${id}`);
+    const first = parsed.failures[0];
+    console.log([head, `  前回と同一 (${prev.id})${first ? `  ·  ${title(first)}` : ''}`, footer].join('\n'));
     return r.code;
   }
   if (r.code === 0) {
@@ -59,17 +64,14 @@ export default function check(target, argv, cfg) {
   const shown = [...parsed.failures].sort((a, b) => isNew(b) - isNew(a)).slice(0, max);
   const lines = [head + (prev ? `  (prev: ${prevIds.length} failed → ${fixed} fixed, ${newly} new)` : '')];
   for (const f of shown) {
-    const loc = [f.file, f.line].filter(Boolean).join(':');
-    lines.push(`  ${isNew(f) ? '✚' : '·'} ${[loc, f.name].filter(Boolean).join('  ') || f.msg}`);
-    if (f.msg && (loc || f.name)) lines.push(`      ${f.msg}`);
+    lines.push(`  ${isNew(f) ? '✚' : '·'} ${title(f)}`);
+    if (f.msg && (loc(f) || f.name)) lines.push(`      ${f.msg}`);
     // **本文は先頭の 1 件だけに付ける。** 直すのは常に 1 件目で、2 件目以降は
     // 1 件目を直せば変わる。全件に付けると 40 行が本文で埋まって一覧が消える。
     if (f === shown[0]) for (const b of f.body || []) lines.push(`      ${b}`);
   }
   if (parsed.failures.length > max) lines.push(`  … +${parsed.failures.length - max} more failures`);
 
-  // 到達経路は**必ず最後に残す** (契約 2)。溢れたときに削るのは本文の側。
-  const footer = `log ${id}  ·  agent log ${id} --grep <re>`;
   console.log(`${emit(lines, (cfg.limits?.max_lines ?? 40) - 1)}\n${footer}`);
   return r.code;
 }

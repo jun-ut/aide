@@ -11,9 +11,10 @@ import { guessTranscript, sessionInfo } from '../src/session.mjs';
 
 const HELP = `agent — コンテキスト予算つきのプロジェクトラッパ
 
-  agent test|lint|build|typecheck [-- <extra>]   固定形式・出力上限つきで実行
+  agent test|lint|build|typecheck [<extra>…]     固定形式・出力上限つきで実行
+                                                 (--release 等はそのまま元コマンドへ渡る)
   agent last [test|lint|build|typecheck]         最後の結果を「走らせずに」読む(鮮度つき)
-  agent log <id> [--grep <re>] [--lines N]       退避した全文を検索
+  agent log <id> [--grep <re>] [-C N] [--lines N]  退避した全文を検索(-C は前後の行)
   agent stats [--limit N] [--all] [--full]       トークンがどこに消えたか実測
   agent age                                      キャッシュ残り時間とコンテキストサイズ
   agent delegate [--write] [-m <model>] "<task>" 安いモデル(opencode)へ委譲
@@ -68,17 +69,39 @@ function runsDir(cfg) {
 
 function showLog(argv, cfg) {
   const id = argv[0];
-  const grep = argv.includes('--grep') ? argv[argv.indexOf('--grep') + 1] : null;
-  const max = Number(argv[argv.indexOf('--lines') + 1]) || 60;
+  const val = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
+  const grep = val('--grep');
+  const max = Number(val('--lines')) || 60;
+  // 一致行だけでは読めない出力がある。rustc / clippy の診断は
+  // 「`error:` の次の行に位置、その後ろに help」という形なので、
+  // `--grep error` だけだと**一番要る位置と直し方が落ちる**(実際に落ちた)。
+  const ctx = Math.max(0, Number(val('-C') ?? val('--context')) || 0);
   const file = path.join(runsDir(cfg), `${id}.log`);
   if (!id || !fs.existsSync(file)) {
     console.log(`log: ${id} が見つかりません。agent runs で一覧`);
     return 2;
   }
   const lines = fs.readFileSync(file, 'utf8').split('\n');
-  const hit = grep ? lines.filter((l) => new RegExp(grep, 'i').test(l)) : lines;
+  const hit = grep ? withContext(lines, new RegExp(grep, 'i'), ctx) : lines;
   console.log(emit(hit.length ? hit : [`(no match for /${grep}/ in ${lines.length} lines)`], max));
   return 0;
+}
+
+/** 一致行とその前後 `ctx` 行。飛んだところには区切りを挟む (grep -C と同じ形) */
+function withContext(lines, re, ctx) {
+  const keep = new Set();
+  lines.forEach((l, i) => {
+    if (!re.test(l)) return;
+    for (let j = Math.max(0, i - ctx); j <= Math.min(lines.length - 1, i + ctx); j++) keep.add(j);
+  });
+  const out = [];
+  let prev = -1;
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    if (prev >= 0 && i > prev + 1) out.push('  ⋯');
+    out.push(lines[i]);
+    prev = i;
+  }
+  return out;
 }
 
 function listRuns(cfg) {

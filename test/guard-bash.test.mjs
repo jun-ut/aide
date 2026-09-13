@@ -51,5 +51,26 @@ t("find /home/jun/project/sightline -maxdepth 3 -not -path '*/.git/*' | sort", '
 t('find /etc -type d -name x -prune -o -print', 'allow');
 t('find . -name x', 'allow'); // 相対パスは対象外のまま
 t('node -e "console.log(1)"', 'allow');
+
+// 止めるときは**付いていたフラグごと**案内する。`cargo build --release` を止めて
+// `agent build` とだけ言うと、リリースのつもりが debug になる (実際になった)。
+const reasonOf = (cmd) =>
+  JSON.parse(
+    execFileSync('node', [HOOK], { input: JSON.stringify({ tool_input: { command: cmd }, cwd: CWD }) }).toString(),
+  ).hookSpecificOutput.permissionDecisionReason || '';
+{
+  const r = reasonOf('cargo build --release 2>&1 | tail -5');
+  const checks = [
+    ['フラグを案内に載せる', /agent build --release/.test(r)],
+    ['リダイレクトは案内に混ぜない', !/agent build [^`\n]*2>&1/.test(r)],
+    ['落とすと効かなくなると言う', /黙って効かなくなります/.test(r)],
+  ];
+  for (const [label, ok] of checks) {
+    if (!ok) bad++;
+    console.log(`${ok ? 'ok  ' : 'NG  '}WRAPPED: ${label}`);
+  }
+  if (checks.some(([, ok]) => !ok)) console.log(`      got ${JSON.stringify(r)}`);
+}
+
 console.log(bad ? `\n${bad} 件 NG` : '\n全件 ok');
 process.exit(bad ? 1 : 0);

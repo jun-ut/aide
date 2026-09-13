@@ -13,7 +13,7 @@
  * 新鮮そうに見える古い数字より、古さが見えている数字のほうが判断に使える。
  */
 import path from 'node:path';
-import { readJson, runDir } from '../util.mjs';
+import { fmt, readJson, runDir } from '../util.mjs';
 
 const TARGETS = ['test', 'lint', 'build', 'typecheck'];
 
@@ -31,11 +31,7 @@ export function ago(ms) {
 export function lastLine(target, root, now = Date.now()) {
   const rec = readJson(path.join(runDir(root), `last-${target}.json`));
   if (!rec) return `${target}  記録なし (agent ${target} で作る)`;
-  const c = rec.counts || {};
-  const tally =
-    c.passed || c.failed || c.skipped
-      ? `${c.passed} passed / ${c.failed} failed${c.skipped ? ` / ${c.skipped} skipped` : ''}`
-      : `exit ${rec.code}`;
+  const tally = fmt.tally(target, rec.counts, rec.code);
   const at = Date.parse(rec.at);
   const when = Number.isNaN(at) ? rec.id : `${ago(now - at)} · ${rec.id}`;
   return `${target}  ${rec.code === 0 ? 'PASS' : 'FAIL'}  ${tally}  (${when} の記録)`;

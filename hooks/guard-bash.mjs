@@ -71,6 +71,20 @@ const WRAPPED = [
   { re: /^(?:npx\s+)?tsc\b(?!.*--help)/, use: 'agent typecheck' },
 ];
 
+/**
+ * 止めたコマンドに付いていたフラグ。案内にそのまま載せるために拾う。
+ *
+ * **これが無いと、`cargo build --release` を止めて `agent build` と案内した結果、
+ * リリースビルドのつもりが debug になる。**しかも成功にしか見えないので気づけない
+ * (実際に起きた)。断片はパイプとリダイレクトで割ってあるので、`-` で始まる語だけ見る。
+ */
+function extraFlags(seg) {
+  return seg
+    .split(/\s+/)
+    .slice(1)
+    .filter((t) => /^-{1,2}[A-Za-z]/.test(t));
+}
+
 // 出力量が予測できないコマンド。head/tail/grep で絞られていれば許す。
 // シェルに依らないもの (git / npm は同じ形で呼ばれる)。
 const UNBOUNDED_ANY = [
@@ -300,9 +314,12 @@ process.stdin.on('end', () => {
     }
     for (const w of WRAPPED) {
       if (w.re.test(seg)) {
+        const flags = extraFlags(seg);
+        const use = flags.length ? `${w.use} ${flags.join(' ')}` : w.use;
         return deny(
-          `\`${seg.slice(0, 50)}\` の代わりに \`${w.use}\` を使ってください。\n` +
+          `\`${seg.slice(0, 50)}\` の代わりに \`${use}\` を使ってください。\n` +
             `理由: 出力が固定形式・行数上限つきになり、全文は .agent/runs/ に退避され、前回との差分だけが出ます。\n` +
+            (flags.length ? `フラグ (${flags.join(' ')}) は上のとおり付けて渡してください。落とすと黙って効かなくなります。\n` : '') +
             `生で実行する必要があるときだけ、先頭に ${raw} を付けてください。\n` +
             `(実行場所: ${root})`,
         );

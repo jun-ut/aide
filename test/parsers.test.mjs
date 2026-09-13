@@ -1,4 +1,4 @@
-import { parseOutput } from '../src/parsers.mjs';
+import { failureId, parseOutput } from '../src/parsers.mjs';
 
 let bad = 0;
 const t = (label, out, want) => {
@@ -64,7 +64,10 @@ error[E0762]: unterminated character literal
    --> crates/sl-syntax/src/lexer.rs:306:51
 error: could not compile \`sl-syntax\` (lib test) due to 2 previous errors
 `;
-t('cargo: 集計行が無いビルド失敗', cargoBuildError, { framework: 'cargo', passed: 0, failed: 2 });
+// **`could not compile … due to N previous errors` は集計行であって失敗ではない。**
+// 以前はこれを 1 件として数えていたので、エラー 1 件の出力が「2 failed」になり、
+// max_failures の枠も 1 つ食っていた (診断が 3 件あると 1 件目が押し出される)。
+t('cargo: 集計行が無いビルド失敗', cargoBuildError, { framework: 'cargo', passed: 0, failed: 1 });
 
 const cargoIgnored = `
 test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s
@@ -120,6 +123,91 @@ error: test failed, to rerun pass \`-p sl-codegen --test diff_types\`
     console.log(`${ok ? 'ok  ' : 'NG  '}cargo: ${label}`);
   }
   if (checks.some(([, ok]) => !ok)) console.log(`      got ${JSON.stringify(f)}`);
+}
+
+// `cargo build` / `cargo clippy` の診断にはエラーコードが無い。**コード付きだけ見ていると
+// generic に落ち、位置も help も落ちる。** そうなると要約だけでは直せず、結局
+// AGENT_RAW=1 で叩き直すことになる (実際に 2 回そうなった)。
+const cargoBuildNoCode = `
+   Compiling mdcore v0.1.0 (C:\\Hub\\Project\\md2doc\\crates\\mdcore)
+error: unknown start of token: \`
+   --> crates\\mdcore\\src\\metrics.rs:212:1
+    |
+212 | \` での明示改行も展開する)。
+    | ^
+    |
+help: Unicode character '\`' (Grave Accent) looks like ''' (Single Quote), but it is not
+    |
+212 - \` での明示改行も展開する)。
+212 + ' での明示改行も展開する)。
+    |
+
+error: unexpected closing delimiter: \`)\`
+   --> crates\\mdcore\\src\\metrics.rs:212:14
+    |
+171 | ) {
+    |   - this opening brace...
+
+error: could not compile \`mdcore\` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile \`mdcore\` (lib test) due to 2 previous errors
+`;
+{
+  const r = parseOutput(cargoBuildNoCode);
+  const f = r.failures[0];
+  const checks = [
+    ['コード無しの error でも cargo として読む', r.framework === 'cargo'],
+    ['位置を見出しに出す', f?.file === 'crates\\mdcore\\src\\metrics.rs' && f.line === 212],
+    ['直し方 (help) を本文に残す', (f?.body || []).some((l) => /Grave Accent/.test(l))],
+    ['`could not compile` を失敗として数えない', r.counts.failed === 2],
+  ];
+  for (const [label, ok] of checks) {
+    if (!ok) bad++;
+    console.log(`${ok ? 'ok  ' : 'NG  '}cargo build: ${label}`);
+  }
+  if (checks.some(([, ok]) => !ok)) console.log(`      got ${JSON.stringify(r.failures)}`);
+}
+
+const clippy = `
+error: this function has too many arguments (8/7)
+  --> crates/mdcore/src/metrics.rs:162:1
+   |
+162 | / fn flush_word(
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/
+   = note: \`-D clippy::too-many-arguments\` implied by \`-D warnings\`
+
+error: the following explicit lifetimes could be elided: 'a
+  --> crates/mdcore/src/metrics.rs:214:19
+   |
+   = note: \`-D clippy::needless-lifetimes\` implied by \`-D warnings\`
+
+error: could not compile \`mdcore\` (lib) due to 2 previous errors
+`;
+{
+  const r = parseOutput(clippy);
+  const ids = r.failures.map(failureId);
+  const checks = [
+    ['clippy も cargo として読む', r.framework === 'cargo'],
+    ['lint ごとに位置が付く', r.failures[0]?.line === 162 && r.failures[1]?.line === 214],
+    ['2 件を別物として数える', new Set(ids).size === 2 && r.counts.failed === 2],
+  ];
+  for (const [label, ok] of checks) {
+    if (!ok) bad++;
+    console.log(`${ok ? 'ok  ' : 'NG  '}clippy: ${label}`);
+  }
+  if (checks.some(([, ok]) => !ok)) console.log(`      got ${JSON.stringify(r.failures)}`);
+}
+
+// generic は位置も名前も持たない。id がメッセージを見ないと**全部同じ id** になり、
+// 中身が入れ替わっても「前回と同一」と言い切って詳細を伏せてしまう (実際に伏せた)。
+{
+  const a = parseOutput('something went wrong: alpha failed\n');
+  const b = parseOutput('something went wrong: beta failed\n');
+  const ok = a.framework === 'generic' && failureId(a.failures[0]) !== failureId(b.failures[0]);
+  if (!ok) bad++;
+  console.log(`${ok ? 'ok  ' : 'NG  '}generic: 別の失敗は別の id になる`);
 }
 
 // --- node:test ---

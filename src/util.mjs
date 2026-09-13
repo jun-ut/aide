@@ -260,6 +260,18 @@ export const fmt = {
   n: (v) => Number(v).toLocaleString('en-US'),
   k: (v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : String(v)),
   dur: (ms) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`),
+  /**
+   * 見出しの件数表示。**lint / build / typecheck に「0 passed」を出さない** ——
+   * 通った件数という概念が無いので、読む側が毎回読み替えることになる。
+   * 出すのはエラー件数だけで、それも無ければ終了コード。
+   * `check` と `last` の両方が使う(同じ記録を 2 通りに書かないため)。
+   */
+  tally: (target, counts = {}, code = 0) => {
+    const c = { passed: 0, failed: 0, skipped: 0, ...counts };
+    if (target !== 'test') return c.failed ? `エラー ${c.failed} 件` : `exit ${code}`;
+    if (!(c.passed || c.failed || c.skipped)) return `exit ${code}`;
+    return `${c.passed} passed / ${c.failed} failed${c.skipped ? ` / ${c.skipped} skipped` : ''}`;
+  },
 };
 
 /** 出力予算の最終防衛線。どの経路でもここを通してから stdout に出す */

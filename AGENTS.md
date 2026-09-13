@@ -14,7 +14,7 @@
 | 型チェック | `agent typecheck` |
 | ビルド | `agent build` |
 | 前回結果を見る (走らせない) | `agent last [test\|lint]` |
-| 出力全文を見る | `agent log <id> --grep <re>` |
+| 出力全文を見る | `agent log <id> --grep <re> [-C N]` |
 | コンテキスト実測 | `agent stats` |
 | キャッシュ残り | `agent age` |
 | 安いモデルへ委譲 | `agent delegate [--write] "<task>"` |
@@ -22,6 +22,10 @@
 
 出力は常に 40 行以内に丸められ、全文は `.agent/runs/<id>.log` にある。
 **要約に欲しい情報が無いときは、コマンドを生で叩き直すのではなく `agent log` で取りに行く。**
+診断が複数行のもの (rustc / clippy) は `--grep` だけだと一致行しか出ない。`-C 3` を付ける。
+
+フラグはそのまま渡る (`agent build --release`)。**ラッパを通すために落とさないこと** ——
+落ちても成功に見えるので気づけない。
 
 ## コンテキストの扱い
 

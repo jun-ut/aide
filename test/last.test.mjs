@@ -41,6 +41,12 @@ t('件数と鮮度が両方出る', lastLine('test', root, now), 'test  PASS  13
 rec('lint', { code: 1, counts: { passed: 0, failed: 0, skipped: 0 }, id: '0907-0045-lint', at: '2026-09-07T11:50:00.000Z' });
 t('件数が取れなければ exit コード', lastLine('lint', root, now), /lint  FAIL  exit 1  \(10分前/);
 
+// lint / build には「通った件数」という概念が無い。**`0 passed / 2 failed` と書くと
+// 読む側が毎回読み替えることになる**ので、エラー件数だけを出す (check の見出しと同じ形)。
+rec('build', { code: 101, counts: { passed: 0, failed: 2, skipped: 0 }, id: '0907-0050-build', at: '2026-09-07T11:55:00.000Z' });
+t('lint/build は passed を出さずエラー件数で言う', lastLine('build', root, now), /build  FAIL  エラー 2 件  \(5分前/);
+fs.rmSync(path.join(root, '.agent', 'run', 'last-build.json'));
+
 // **記録が無いことを「PASS 0 件」に化けさせない。** 今回直したパーサの嘘と同じ穴。
 t('記録が無ければそう言う', lastLine('build', root, now), 'build  記録なし (agent build で作る)');
 

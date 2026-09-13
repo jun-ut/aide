@@ -60,6 +60,41 @@ function cargoPanic(lines, i, max = 12) {
   return { at, body: out };
 }
 
+/**
+ * rustc / clippy の診断ブロックから、位置と「読むと直せる行」を取り出す。
+ *
+ *   error: <msg>
+ *      --> FILE:LINE:COL   ← 位置。**要約から落ちると raw で叩き直しになる**(実際になった)
+ *       |
+ *   212 | <該当行>          ← 何が起きたか
+ *       = help: ...         ← どう直すか。clippy はここに lint 名と allow の書き方も出る
+ *
+ * `-->` の行そのものは本文に入れない —— 位置は呼ぶ側が見出しに出すので重複する。
+ */
+function rustDiag(lines, i, max = 3) {
+  let at = null;
+  const body = [];
+  for (let j = i; j < lines.length && j < i + 24; j++) {
+    const l = lines[j];
+    if (j > i && /^(?:error|warning)(?:\[E\d+\])?:/.test(l)) break;
+    const loc = l.match(/^\s*-->\s+(\S+?):(\d+)(?::\d+)?\s*$/);
+    if (loc) {
+      at ||= { file: loc[1], line: Number(loc[2]) };
+      continue;
+    }
+    if (body.length >= max) continue;
+    // 該当行 (`212 | …`) と help/note だけ。`|` と `^^^` の行は位置で足りる
+    if (/^\s*\d+\s*\|\s*\S/.test(l) || /^\s*(?:=\s*)?(?:help|note):/.test(l)) body.push(clean(l).slice(0, 160));
+  }
+  return { at, body };
+}
+
+/**
+ * 失敗ではなく**集計・案内**の行。数えると 1 件の失敗が 3 件に見え、
+ * max_failures の枠を埋めて肝心の 1 件目を押し出す(実際に押し出した)。
+ */
+const RUST_SUMMARY = /^(?:test failed, to rerun|could not compile|aborting due to|build failed|process didn't exit)/;
+
 /** 失敗ブロックから「本当に読みたい1〜2行」を選ぶ */
 function gist(lines) {
   const useful = lines.filter((l) => !/^(FAIL|PASS|ok|error|failures?:)\s*$/i.test(l.trim()));
@@ -140,7 +175,12 @@ const parsers = [
   },
   {
     name: 'cargo',
-    test: (o) => /^(test result:|error\[E\d+\]|---- .* stdout ----)/m.test(o),
+    // `cargo build` / `cargo clippy` の失敗にはエラーコードが無いものが多い
+    // (`error: unknown start of token` / clippy の lint)。**コード付きだけ見ていると
+    // generic に落ち、位置 (`-->`) も help も落ちて raw で叩き直しになる**(実際になった)。
+    // コード無しの `error:` は他ツールと区別できないので、rustc 固有の `-->` 行で見る。
+    test: (o) =>
+      /^(test result:|error\[E\d+\]|---- .* stdout ----)/m.test(o) || /^\s*-->\s+\S+:\d+(?::\d+)?\s*$/m.test(o),
     parse(o) {
       const lines = o.split('\n');
       const failures = [];
@@ -158,12 +198,11 @@ const parsers = [
         }
         // `error: test failed, to rerun pass ...` は失敗ではなく再実行の案内。
         // 失敗として数えると、1 本落ちただけで見出しが 2 件に増える (実際に増えた)。
-        const e = /^error:\s*test failed, to rerun/.test(lines[i])
-          ? null
-          : lines[i].match(/^error(\[E\d+\])?:\s*(.+)$/);
-        if (e) {
-          const loc = (lines[i + 1] || '').match(/-->\s+(\S+):(\d+)/);
-          failures.push({ file: loc?.[1] || '', line: Number(loc?.[2]) || null, name: e[1] || 'error', msg: e[2] });
+        // `could not compile … due to N previous errors` も同じ(集計行)。
+        const e = lines[i].match(/^error(\[E\d+\])?:\s*(.+)$/);
+        if (e && !RUST_SUMMARY.test(e[2])) {
+          const { at, body } = rustDiag(lines, i + 1);
+          failures.push({ file: at?.file || '', line: at?.line ?? null, name: e[1] || '', msg: e[2], body });
         }
       }
       // cargo はテスト対象ごとに集計行を出す (lib / 各 integration / doc-tests)。
@@ -245,10 +284,15 @@ function countsFrom(o) {
   };
 }
 
+// 同じ失敗を 2 度出さないための鍵。**メッセージまで入れる。**
+// 位置と名前だけだと、同じ関数に 2 つの lint が付いたときに片方が消える。
+// cargo は lib と lib test で同じ診断を 2 回吐くが、そちらは全部同じなので畳める。
+const dedupeKey = (f) => `${f.file}:${f.line}|${f.name}|${(f.msg || '').slice(0, 80)}`;
+
 function dedupe(list) {
   const seen = new Set();
   return list.filter((f) => {
-    const k = `${f.file}:${f.line}|${f.name}`;
+    const k = dedupeKey(f);
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -282,4 +326,13 @@ export function parseOutput(out) {
   return { framework: 'generic', ...generic(out) };
 }
 
-export const failureId = (f) => `${f.file}:${f.line ?? ''}|${f.name}`;
+/**
+ * 前回との差分を取るための同一性。**位置も名前も無いときはメッセージで見る。**
+ *
+ * generic は `file:''  line:null  name:''` を返すので、以前はどの失敗も同じ id
+ * (`:|`) になっていた。その結果、**中身が入れ替わっても「前回と同一」と言い切って
+ * 詳細を伏せる**という一番困る壊れ方をしていた(実際に、直した lint と新しく出た
+ * lint がすり替わった回で「前回と同一」と出て、raw で叩き直すことになった)。
+ */
+export const failureId = (f) =>
+  f.file || f.name ? `${f.file}:${f.line ?? ''}|${f.name}` : `msg|${(f.msg || '').slice(0, 120)}`;
