@@ -299,10 +299,22 @@ function dedupe(list) {
   });
 }
 
-/** 未知のツール向けフォールバック。エラーらしき行だけを拾う */
-function generic(o) {
+/**
+ * 未知のツール向けフォールバック。エラーらしき行だけを拾う。
+ *
+ * `ok` は「元コマンドが 0 で終わった」。**成功した実行の出力に失敗は 1 件も無い。**
+ * これを見ないと、エラー語を含まない成功出力で末尾フォールバック
+ * (`lines.slice(-10)`) が走り、`Finished ... in 0.08s` のような**ただの進捗行が
+ * failure として記録される**。そうなると:
+ *   - id にビルド時間が入るので**毎回変わり**、`(N fixed)` が延々と出続ける
+ *   - 「前回と同一なら 2 行」(check.mjs の `same`) が永久に成立しない
+ * 実際に他プロジェクトの `agent lint` が、警告ゼロのまま `(1 fixed)` → `(5 fixed)`
+ * と出し、**ツールがコードを書き換えたのかと確認する往復**を生んだ。
+ */
+function generic(o, ok = false) {
   const lines = o.split('\n').filter((l) => l.trim() && !NOISE.test(l));
   const hits = lines.filter((l) => /\b(error|failed|FAIL|✗|✘|panic|Exception|Traceback)\b/i.test(l));
+  if (ok) return { counts: { passed: 0, failed: 0, skipped: 0 }, failures: [] };
   const picked = (hits.length ? hits : lines.slice(-10)).slice(0, 20);
   return {
     counts: { passed: 0, failed: hits.length, skipped: 0 },
@@ -310,7 +322,8 @@ function generic(o) {
   };
 }
 
-export function parseOutput(out) {
+/** `opts.ok` は元コマンドの終了コードが 0 だったか(→ generic のフォールバック抑止) */
+export function parseOutput(out, opts = {}) {
   for (const p of parsers) {
     if (!p.test(out)) continue;
     try {
@@ -323,7 +336,7 @@ export function parseOutput(out) {
       }
     } catch {}
   }
-  return { framework: 'generic', ...generic(out) };
+  return { framework: 'generic', ...generic(out, opts.ok === true) };
 }
 
 /**

@@ -210,6 +210,29 @@ error: could not compile \`mdcore\` (lib) due to 2 previous errors
   console.log(`${ok ? 'ok  ' : 'NG  '}generic: 別の失敗は別の id になる`);
 }
 
+// generic の末尾フォールバックは**失敗したときだけ**。成功した実行の進捗行を
+// failure として記録すると、id にビルド時間が入って毎回変わり、`(N fixed)` が
+// 延々と出続ける(実際に他プロジェクトの `agent lint` が、警告ゼロのまま
+// (1 fixed) → (5 fixed) と出し、コードを書き換えられたのかと確認させた)。
+{
+  const clippyOk = `    Checking mdcore v0.1.0 (C:\\p\\crates\\mdcore)
+    Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 2.44s
+`;
+  const passed = parseOutput(clippyOk, { ok: true });
+  const failed = parseOutput(clippyOk, { ok: false });
+  const checks = [
+    ['成功なら failure は 0 件', passed.framework === 'generic' && passed.failures.length === 0],
+    ['成功なら failed も 0', passed.counts.failed === 0],
+    // 失敗したときは従来どおり末尾を拾う(何が起きたか分からないと叩き直しになる)
+    ['失敗なら末尾を拾う', failed.failures.length > 0],
+    ['既定は失敗側(ok を渡さなければ従来どおり)', parseOutput(clippyOk).failures.length > 0],
+  ];
+  for (const [label, ok] of checks) {
+    if (!ok) bad++;
+    console.log(`${ok ? 'ok  ' : 'NG  '}generic: ${label}`);
+  }
+}
+
 // --- node:test ---
 // 同じ罠。集計行が「ℹ fail 0」なので generic に落ちると嘘になる。
 const nodeOk = `

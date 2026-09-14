@@ -2,6 +2,34 @@ import path from 'node:path';
 import { detectCommand, emit, fmt, readJson, runCapture, runDir, spill, writeJson } from '../util.mjs';
 import { failureId, parseOutput } from '../parsers.mjs';
 
+/** シェルの連結・パイプ。ここを跨いで末尾連結すると最後の 1 本にしか効かない */
+const CHAIN = /&&|\|\||[;|]/;
+
+/**
+ * 追加フラグを埋める位置を決める。
+ *
+ * - フラグ無し → そのまま
+ * - `{}` があればそこへ入れる(**複数可**。`cargo test {} && cd x && cargo test {}`)
+ * - 連結でない単一コマンド → 末尾へ足す(従来どおり)
+ * - 連結コマンドで `{}` が無い → **null(呼び手が止める)**
+ *
+ * 最後の枝が要るのは、末尾連結が黙って間違うため。実例: `test: cargo test && cd
+ * apps/melqi/src-tauri && cargo test` に `agent test --workspace` を渡すと
+ * `--workspace` が **GUI 側の cargo test にだけ**付き、要約は両方 434 passed で
+ * 一致するので差に気づけなかった。
+ */
+export function withArgs(template, passthru) {
+  // **`{}` はフラグが無くても必ず消す。** 残すと `cargo test {}` が「{} という名前の
+  // テストだけ実行」になり、**0 件実行して PASS** で返る(実際に踏んだ)。
+  // 直前の空白ごと落とすのは `cargo test {} --locked` を壊さないため。
+  if (template.includes('{}')) {
+    return passthru ? template.split('{}').join(passthru) : template.replace(/\s*\{\}/g, '');
+  }
+  if (!passthru) return template;
+  if (CHAIN.test(template)) return null;
+  return `${template} ${passthru}`;
+}
+
 /**
  * agent test|lint|build|typecheck
  *
@@ -17,16 +45,32 @@ export default function check(target, argv, cfg) {
   // **黙って落とさない。** 以前は `--` の後ろしか渡らず、`agent build --release` が
   // debug ビルドになっていた —— 呼んだ側からは成功にしか見えないので気づけない。
   const passthru = argv.filter((a) => a !== '--').join(' ');
-  const cmd = [cfg.commands?.[target] || detectCommand(target, root), passthru].filter(Boolean).join(' ');
+  const template = cfg.commands?.[target] || detectCommand(target, root);
 
-  if (!cmd) {
+  if (!template) {
     console.log(`${target}: NO_COMMAND  .agent/config.yml の commands.${target} を設定してください`);
+    return 2;
+  }
+
+  const cmd = withArgs(template, passthru);
+  // 連結コマンドに末尾連結すると**最後の 1 本にしか効かない**。上の `--release` と
+  // 同じ壊れ方(呼んだ側からは成功に見える)なので、推測せず止める
+  if (cmd === null) {
+    console.log(
+      [
+        `${target}: ARGS_UNPLACED  commands.${target} が複数のコマンドを繋いでいるため、`,
+        `  \`${passthru}\` をどこに付けるか決められません(末尾に足すと最後の 1 本にしか効きません)。`,
+        `  .agent/config.yml の commands.${target} に {} を書いて位置を指定してください`,
+        `  (例: \`cargo test {} && cd apps/gui && cargo test {}\`)。いまの設定:`,
+        `    ${target}: ${template}`,
+      ].join('\n'),
+    );
     return 2;
   }
 
   const r = runCapture(cmd, { cwd: root, timeoutSec: cfg.limits?.timeout_sec });
   const id = spill(root, target, `$ ${cmd}\n\n${r.out}`);
-  const parsed = parseOutput(r.out);
+  const parsed = parseOutput(r.out, { ok: r.code === 0 });
 
   const prevPath = path.join(runDir(root), `last-${target}.json`);
   const prev = readJson(prevPath);
@@ -56,7 +100,12 @@ export default function check(target, argv, cfg) {
     return r.code;
   }
   if (r.code === 0) {
-    console.log(fixed ? `${head}  (${fixed} fixed)` : head);
+    // 成功でも到達経路は出す(契約 2)。ここを省いていたせいで、「434 passed の
+    // 内訳はどのクレートか」を確かめるのに `ls .agent/runs/` から時刻で当てる、
+    // という**削減のために増えた往復**が起きていた。
+    // `fixed` は「前回失敗していて今回消えたもの」。`(N fixed)` とだけ書くと
+    // **ツールがコードを直した**と読めるので、前回との関係が分かる形で出す。
+    console.log([fixed ? `${head}  (prev ${fixed} failed → 0)` : head, footer].join('\n'));
     return 0;
   }
 
